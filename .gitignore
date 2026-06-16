@@ -1,0 +1,20 @@
+# Documentation / local notes
+*.md
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Local runtime output
+tmp/
+storage/
+
+# Build and test artifacts
+*.exe
+*.test
+coverage.out
+coverage/
+
+# Logs
+*.log
