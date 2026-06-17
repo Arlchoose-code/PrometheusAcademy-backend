@@ -199,11 +199,34 @@ func SyncOrderPaymentStatus(ctx context.Context, db *gorm.DB, cfg config.Config,
 			if err := FulfillSuccessfulOrder(ctx, tx, *order); err != nil {
 				return err
 			}
-			_, err := EnsureInvoice(ctx, tx, cfg, *order)
+			invoice, err := EnsureInvoice(ctx, tx, cfg, *order)
+			if err == nil {
+				_ = SendOrderPaymentEmails(ctx, tx, cfg, *order, invoice)
+			}
 			return err
 		}
 		return nil
 	})
+}
+
+func SendOrderPaymentEmails(ctx context.Context, db *gorm.DB, cfg config.Config, order models.Order, invoice models.Invoice) error {
+	var user models.User
+	if err := db.WithContext(ctx).First(&user, order.UserID).Error; err != nil {
+		return err
+	}
+	_, itemName, _ := OrderPaymentItem(ctx, db, order.ID)
+	amount := fmt.Sprintf("Rp %d", order.TotalAmount)
+	variables := map[string]string{
+		"amount":         amount,
+		"product":        itemName,
+		"transaction_id": order.MidtransOrderID,
+		"invoice_number": invoice.InvoiceNumber,
+		"invoice_url":    localizedFrontendURL(cfg, user.Language, fmt.Sprintf("/downloads/invoices/%d", order.ID)),
+		"dashboard_url":  localizedFrontendURL(cfg, user.Language, "/dashboard"),
+	}
+	_ = SendTransactionalTemplateEmail(ctx, db, EmailTemplatePaymentSuccess, "payment_success", user, variables)
+	_ = SendTransactionalTemplateEmail(ctx, db, EmailTemplateInvoice, "invoice", user, variables)
+	return nil
 }
 
 func MapMidtransStatus(status string) string {

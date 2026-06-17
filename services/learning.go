@@ -186,7 +186,24 @@ func SyncCourseCompletion(ctx context.Context, db *gorm.DB, cfg config.Config, c
 		}
 		certificate.CertificateURL = protectedURL
 	}
+	_ = SendCertificateReadyEmail(ctx, db, cfg, course, certificate)
 	return &certificate, true, nil
+}
+
+func SendCertificateReadyEmail(ctx context.Context, db *gorm.DB, cfg config.Config, course models.Course, certificate models.Certificate) error {
+	var user models.User
+	if err := db.WithContext(ctx).First(&user, certificate.UserID).Error; err != nil {
+		return err
+	}
+	courseTitle := course.TitleEn
+	if normalizeMailerLocale(user.Language) == "id" && strings.TrimSpace(course.TitleID) != "" {
+		courseTitle = course.TitleID
+	}
+	return SendTransactionalTemplateEmail(ctx, db, EmailTemplateCertificate, "certificate", user, map[string]string{
+		"course":          courseTitle,
+		"certificate_url": localizedFrontendURL(cfg, user.Language, certificate.CertificateURL),
+		"dashboard_url":   localizedFrontendURL(cfg, user.Language, "/dashboard"),
+	})
 }
 
 func SubmitQuiz(ctx context.Context, db *gorm.DB, quizID, userID uint, answers []QuizAnswerInput) (map[string]any, error) {

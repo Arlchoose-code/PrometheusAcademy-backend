@@ -3,9 +3,13 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
+	"math/big"
+	"net/url"
 	"strings"
 	"time"
 
@@ -22,6 +26,9 @@ const (
 	tokenTypeRefresh = "refresh"
 	accessTokenTTL   = 15 * time.Minute
 	refreshTokenTTL  = 7 * 24 * time.Hour
+	passwordResetTTL = 30 * time.Minute
+	authOTPTTL       = 10 * time.Minute
+	loginOTPInterval = 30 * 24 * time.Hour
 )
 
 type TokenClaims struct {
@@ -38,6 +45,13 @@ type TokenPair struct {
 	RefreshExpiresAt time.Time
 }
 
+type AuthOTPChallenge struct {
+	RequiresOTP bool
+	Purpose     string
+	Email       string
+	Message     string
+}
+
 type AuthService struct {
 	db  *gorm.DB
 	cfg config.Config
@@ -47,22 +61,40 @@ func NewAuthService(db *gorm.DB, cfg config.Config) *AuthService {
 	return &AuthService{db: db, cfg: cfg}
 }
 
-func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest) (models.User, TokenPair, error) {
+func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest) (models.User, TokenPair, *AuthOTPChallenge, error) {
 	if s.db == nil {
-		return models.User{}, TokenPair{}, errors.New("database is not configured")
+		return models.User{}, TokenPair{}, nil, errors.New("database is not configured")
 	}
 
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	var existing models.User
 	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&existing).Error; err == nil {
-		return models.User{}, TokenPair{}, errors.New("email is already registered")
+		if existing.EmailVerifiedAt != nil {
+			return models.User{}, TokenPair{}, nil, errors.New("email is already registered")
+		}
+		hash, err := HashPassword(req.Password)
+		if err != nil {
+			return models.User{}, TokenPair{}, nil, err
+		}
+		language := req.Language
+		if language == "" {
+			language = "en"
+		}
+		existing.Name = strings.TrimSpace(req.Name)
+		existing.Password = hash
+		existing.Language = language
+		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
+			return models.User{}, TokenPair{}, nil, fmt.Errorf("auth register update pending user: %w", err)
+		}
+		challenge, err := s.sendAuthOTP(ctx, existing, "register")
+		return existing, TokenPair{}, challenge, err
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.User{}, TokenPair{}, fmt.Errorf("auth register lookup: %w", err)
+		return models.User{}, TokenPair{}, nil, fmt.Errorf("auth register lookup: %w", err)
 	}
 
 	hash, err := HashPassword(req.Password)
 	if err != nil {
-		return models.User{}, TokenPair{}, err
+		return models.User{}, TokenPair{}, nil, err
 	}
 
 	language := req.Language
@@ -79,36 +111,40 @@ func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest)
 		Language:  language,
 	}
 	if err := s.db.WithContext(ctx).Create(&user).Error; err != nil {
-		return models.User{}, TokenPair{}, fmt.Errorf("auth register create user: %w", err)
+		return models.User{}, TokenPair{}, nil, fmt.Errorf("auth register create user: %w", err)
 	}
 
-	tokens, err := s.IssueTokenPair(user.ID, user.TokenVersion)
-	if err != nil {
-		return models.User{}, TokenPair{}, err
-	}
-
-	return user, tokens, nil
+	challenge, err := s.sendAuthOTP(ctx, user, "register")
+	return user, TokenPair{}, challenge, err
 }
 
-func (s *AuthService) Login(ctx context.Context, req structs.LoginRequest) (models.User, TokenPair, error) {
+func (s *AuthService) Login(ctx context.Context, req structs.LoginRequest) (models.User, TokenPair, *AuthOTPChallenge, error) {
 	if s.db == nil {
-		return models.User{}, TokenPair{}, errors.New("database is not configured")
+		return models.User{}, TokenPair{}, nil, errors.New("database is not configured")
 	}
 
 	var user models.User
 	if err := s.db.WithContext(ctx).Where("email = ?", strings.ToLower(strings.TrimSpace(req.Email))).First(&user).Error; err != nil {
-		return models.User{}, TokenPair{}, errors.New("invalid credentials")
+		return models.User{}, TokenPair{}, nil, errors.New("invalid credentials")
 	}
 	if err := CheckPassword(req.Password, user.Password); err != nil {
-		return models.User{}, TokenPair{}, errors.New("invalid credentials")
+		return models.User{}, TokenPair{}, nil, errors.New("invalid credentials")
+	}
+	if user.EmailVerifiedAt == nil {
+		challenge, err := s.sendAuthOTP(ctx, user, "register")
+		return user, TokenPair{}, challenge, err
+	}
+	if s.needsLoginOTP(user) {
+		challenge, err := s.sendAuthOTP(ctx, user, "login")
+		return user, TokenPair{}, challenge, err
 	}
 
 	tokens, err := s.IssueTokenPair(user.ID, user.TokenVersion)
 	if err != nil {
-		return models.User{}, TokenPair{}, err
+		return models.User{}, TokenPair{}, nil, err
 	}
 
-	return user, tokens, nil
+	return user, tokens, nil, nil
 }
 
 func (s *AuthService) IssueTokenPair(userID uint, tokenVersion int) (TokenPair, error) {
@@ -221,6 +257,184 @@ func (s *AuthService) RevokeUserSessions(ctx context.Context, userID uint) error
 	return nil
 }
 
+func (s *AuthService) VerifyAuthOTP(ctx context.Context, req structs.VerifyAuthOTPRequest) (models.User, TokenPair, error) {
+	if s.db == nil {
+		return models.User{}, TokenPair{}, errors.New("database is not configured")
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	purpose := strings.ToLower(strings.TrimSpace(req.Purpose))
+	var user models.User
+	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
+		return models.User{}, TokenPair{}, errors.New("invalid or expired code")
+	}
+	var otp models.AuthEmailOTP
+	hash := authOTPHash(email, purpose, req.Code)
+	if err := s.db.WithContext(ctx).
+		Where("email = ? AND purpose = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ?", email, purpose, hash, time.Now()).
+		Order("id DESC").
+		First(&otp).Error; err != nil {
+		return models.User{}, TokenPair{}, errors.New("invalid or expired code")
+	}
+	now := time.Now()
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&otp).Update("used_at", &now).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{}
+		if purpose == "register" {
+			updates["email_verified_at"] = now
+			updates["last_login_otp_at"] = now
+		}
+		if purpose == "login" {
+			updates["last_login_otp_at"] = now
+		}
+		if len(updates) > 0 {
+			if err := tx.Model(&user).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("email = ? AND purpose = ? AND used_at IS NULL", email, purpose).Delete(&models.AuthEmailOTP{}).Error
+	}); err != nil {
+		return models.User{}, TokenPair{}, fmt.Errorf("verify auth otp: %w", err)
+	}
+	if err := s.db.WithContext(ctx).First(&user, user.ID).Error; err != nil {
+		return models.User{}, TokenPair{}, err
+	}
+	if purpose == "register" {
+		if err := SendTransactionalTemplateEmail(ctx, s.db, EmailTemplateRegister, "welcome", user, map[string]string{
+			"dashboard_url": localizedFrontendURL(s.cfg, user.Language, "/dashboard"),
+		}); err != nil {
+			log.Printf("register welcome email failed: user_id=%d email=%s error=%v", user.ID, user.Email, err)
+		}
+	}
+	tokens, err := s.IssueTokenPair(user.ID, user.TokenVersion)
+	if err != nil {
+		return models.User{}, TokenPair{}, err
+	}
+	return user, tokens, nil
+}
+
+func (s *AuthService) ResendAuthOTP(ctx context.Context, req structs.ResendAuthOTPRequest) (*AuthOTPChallenge, error) {
+	if s.db == nil {
+		return nil, errors.New("database is not configured")
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	purpose := strings.ToLower(strings.TrimSpace(req.Purpose))
+	var user models.User
+	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
+		return &AuthOTPChallenge{RequiresOTP: true, Purpose: purpose, Email: email, Message: "If the account exists, a verification code has been sent."}, nil
+	}
+	if purpose == "register" && user.EmailVerifiedAt != nil {
+		return nil, errors.New("email is already verified")
+	}
+	return s.sendAuthOTP(ctx, user, purpose)
+}
+
+func (s *AuthService) needsLoginOTP(user models.User) bool {
+	if user.LastLoginOTPAt == nil {
+		return true
+	}
+	return time.Since(*user.LastLoginOTPAt) >= loginOTPInterval
+}
+
+func (s *AuthService) sendAuthOTP(ctx context.Context, user models.User, purpose string) (*AuthOTPChallenge, error) {
+	code, err := randomOTPCode()
+	if err != nil {
+		return nil, err
+	}
+	purpose = strings.ToLower(strings.TrimSpace(purpose))
+	if purpose == "" {
+		purpose = "login"
+	}
+	if err := s.db.WithContext(ctx).Where("email = ? AND purpose = ? AND used_at IS NULL", user.Email, purpose).Delete(&models.AuthEmailOTP{}).Error; err != nil {
+		return nil, fmt.Errorf("clear old auth otp: %w", err)
+	}
+	otp := models.AuthEmailOTP{
+		UserID:    user.ID,
+		Email:     strings.ToLower(strings.TrimSpace(user.Email)),
+		Purpose:   purpose,
+		CodeHash:  authOTPHash(user.Email, purpose, code),
+		ExpiresAt: time.Now().Add(authOTPTTL),
+	}
+	if err := s.db.WithContext(ctx).Create(&otp).Error; err != nil {
+		return nil, fmt.Errorf("create auth otp: %w", err)
+	}
+	settingKey := EmailTemplateLogin
+	fallbackKey := "otp_login"
+	logLabel := "login otp"
+	if purpose == "register" {
+		settingKey = EmailTemplateEmailVerification
+		fallbackKey = "email_verification"
+		logLabel = "register otp"
+	}
+	if err := SendTransactionalTemplateEmail(ctx, s.db, settingKey, fallbackKey, user, map[string]string{
+		"otp": code,
+	}); err != nil {
+		log.Printf("%s email failed: user_id=%d email=%s error=%v", logLabel, user.ID, user.Email, err)
+		return nil, err
+	}
+	return &AuthOTPChallenge{
+		RequiresOTP: true,
+		Purpose:     purpose,
+		Email:       user.Email,
+		Message:     "Verification code sent to email.",
+	}, nil
+}
+
+func (s *AuthService) RequestPasswordReset(ctx context.Context, req structs.RequestPasswordResetRequest) error {
+	if s.db == nil {
+		return errors.New("database is not configured")
+	}
+	var user models.User
+	if err := s.db.WithContext(ctx).Where("email = ?", strings.ToLower(strings.TrimSpace(req.Email))).First(&user).Error; err != nil {
+		return nil
+	}
+	token, err := randomResetToken()
+	if err != nil {
+		return err
+	}
+	item := models.PasswordResetToken{
+		UserID:    user.ID,
+		TokenHash: passwordResetTokenHash(token),
+		ExpiresAt: time.Now().Add(passwordResetTTL),
+	}
+	if err := s.db.WithContext(ctx).Create(&item).Error; err != nil {
+		return fmt.Errorf("create password reset token: %w", err)
+	}
+	resetURL := localizedFrontendURL(s.cfg, user.Language, "/login") + "?reset_token=" + url.QueryEscape(token)
+	if err := SendTransactionalTemplateEmail(ctx, s.db, EmailTemplatePasswordReset, "password_reset", user, map[string]string{
+		"reset_url": resetURL,
+	}); err != nil {
+		log.Printf("password reset email failed: user_id=%d email=%s error=%v", user.ID, user.Email, err)
+	}
+	return nil
+}
+
+func (s *AuthService) ConfirmPasswordReset(ctx context.Context, req structs.ConfirmPasswordResetRequest) error {
+	if s.db == nil {
+		return errors.New("database is not configured")
+	}
+	var token models.PasswordResetToken
+	if err := s.db.WithContext(ctx).Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", passwordResetTokenHash(req.Token), time.Now()).First(&token).Error; err != nil {
+		return errors.New("invalid or expired reset token")
+	}
+	hash, err := HashPassword(req.Password)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.User{}).Where("id = ?", token.UserID).Updates(map[string]any{
+			"password":          hash,
+			"token_version":     gorm.Expr("token_version + 1"),
+			"last_login_otp_at": nil,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&token).Update("used_at", &now).Error
+	})
+}
+
 func (s *AuthService) UserResponse(user models.User) structs.UserResponse {
 	var profile models.UserProfile
 	if s.db != nil {
@@ -228,14 +442,15 @@ func (s *AuthService) UserResponse(user models.User) structs.UserResponse {
 	}
 
 	return structs.UserResponse{
-		ID:        user.ID,
-		Name:      user.Name,
-		Email:     user.Email,
-		Avatar:    user.Avatar,
-		Phone:     user.Phone,
-		IsStudent: user.IsStudent,
-		IsAdmin:   user.IsAdmin,
-		Language:  user.Language,
+		ID:              user.ID,
+		Name:            user.Name,
+		Email:           user.Email,
+		Avatar:          user.Avatar,
+		Phone:           user.Phone,
+		IsStudent:       user.IsStudent,
+		IsAdmin:         user.IsAdmin,
+		Language:        user.Language,
+		EmailVerifiedAt: user.EmailVerifiedAt,
 		Profile: structs.UserProfileResponse{
 			BioEn:        profile.BioEn,
 			BioID:        profile.BioID,
@@ -306,4 +521,45 @@ func randomJTI() (string, error) {
 		return "", fmt.Errorf("generate jwt id: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+func randomResetToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("generate reset token: %w", err)
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func passwordResetTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
+}
+
+func randomOTPCode() (string, error) {
+	max := big.NewInt(1000000)
+	value, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		return "", fmt.Errorf("generate auth otp: %w", err)
+	}
+	return fmt.Sprintf("%06d", value.Int64()), nil
+}
+
+func authOTPHash(email string, purpose string, code string) string {
+	normalized := strings.ToLower(strings.TrimSpace(email)) + "|" + strings.ToLower(strings.TrimSpace(purpose)) + "|" + strings.TrimSpace(code)
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
+}
+
+func localizedFrontendURL(cfg config.Config, language string, path string) string {
+	base := cfg.BaseURL
+	if len(cfg.CORSOrigins) > 0 && strings.TrimSpace(cfg.CORSOrigins[0]) != "" {
+		base = strings.TrimSpace(cfg.CORSOrigins[0])
+	}
+	base = strings.TrimRight(base, "/")
+	locale := normalizeMailerLocale(language)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return base + "/" + locale + path
 }

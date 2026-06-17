@@ -43,7 +43,7 @@ func (h *Controller) BookConsultationSlot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Successful booking-time product order is required"})
 		return
 	}
-	booking, err := services.BookConsultationSlot(c.Request.Context(), h.db, user, uint(slotID), req.OrderID, req.Notes)
+	booking, err := services.BookConsultationSlot(c.Request.Context(), h.db, h.cfg, user, uint(slotID), req.OrderID, req.Notes)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
 		return

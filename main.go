@@ -54,6 +54,7 @@ func main() {
 				}
 			}
 		}()
+		go services.StartEmailCampaignWorker(ctx, db)
 	}
 
 	router := gin.New()

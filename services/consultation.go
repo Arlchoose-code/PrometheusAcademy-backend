@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"academyprometheus/backend/config"
 	"academyprometheus/backend/models"
 
 	"gorm.io/gorm"
@@ -135,11 +136,12 @@ func NotifyAdminsAboutBooking(ctx context.Context, db *gorm.DB, user models.User
 	return db.WithContext(ctx).Create(&notifications).Error
 }
 
-func BookConsultationSlot(ctx context.Context, db *gorm.DB, user models.User, slotID uint, orderID uint, notes string) (models.ConsultationBooking, error) {
+func BookConsultationSlot(ctx context.Context, db *gorm.DB, cfg config.Config, user models.User, slotID uint, orderID uint, notes string) (models.ConsultationBooking, error) {
 	if err := EnsureConsultationOrder(ctx, db, user.ID, orderID); err != nil {
 		return models.ConsultationBooking{}, err
 	}
 	var booking models.ConsultationBooking
+	var bookedSlot models.ConsultationSlot
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var slot models.ConsultationSlot
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&slot, slotID).Error; err != nil {
@@ -168,8 +170,16 @@ func BookConsultationSlot(ctx context.Context, db *gorm.DB, user models.User, sl
 		if err := tx.Model(&slot).Update("is_available", false).Error; err != nil {
 			return err
 		}
+		bookedSlot = slot
 		return NotifyAdminsAboutBooking(ctx, tx, user, slot, booking)
 	})
+	if err == nil {
+		_ = SendTransactionalTemplateEmail(ctx, db, EmailTemplateBookingConfirmation, "booking_confirmation", user, map[string]string{
+			"booking_time":  bookedSlot.Date.Format("2006-01-02") + " " + bookedSlot.TimeStart + "-" + bookedSlot.TimeEnd,
+			"service":       "Consultation",
+			"dashboard_url": localizedFrontendURL(cfg, user.Language, "/dashboard/bookings"),
+		})
+	}
 	return booking, err
 }
 

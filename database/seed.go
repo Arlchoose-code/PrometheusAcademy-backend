@@ -63,21 +63,23 @@ func seedUsers(ctx context.Context, db *gorm.DB) (models.User, models.User, erro
 	if err != nil {
 		return models.User{}, models.User{}, fmt.Errorf("seed admin password: %w", err)
 	}
+	verifiedAt := time.Now()
 
 	admin := models.User{
-		Name:      "Prometheus Admin",
-		Email:     "admin@academyprometheus.com",
-		Password:  hash,
-		Phone:     "+62 812 0000 0000",
-		IsStudent: false,
-		IsAdmin:   true,
-		Language:  "en",
+		Name:            "Prometheus Admin",
+		Email:           "admin@academyprometheus.com",
+		Password:        hash,
+		Phone:           "+62 812 0000 0000",
+		IsStudent:       false,
+		IsAdmin:         true,
+		Language:        "en",
+		EmailVerifiedAt: &verifiedAt,
 	}
 	if err := db.WithContext(ctx).Where(models.User{Email: admin.Email}).Assign(admin).FirstOrCreate(&admin).Error; err != nil {
 		return admin, models.User{}, fmt.Errorf("seed admin user: %w", err)
 	}
 
-	student := models.User{Name: "Nadia Putri", Email: "nadia@example.com", Password: hash, IsStudent: true, Language: "id"}
+	student := models.User{Name: "Nadia Putri", Email: "nadia@example.com", Password: hash, IsStudent: true, Language: "id", EmailVerifiedAt: &verifiedAt}
 	if err := db.WithContext(ctx).Where(models.User{Email: student.Email}).Assign(student).FirstOrCreate(&student).Error; err != nil {
 		return admin, student, fmt.Errorf("seed student user: %w", err)
 	}
@@ -87,24 +89,38 @@ func seedUsers(ctx context.Context, db *gorm.DB) (models.User, models.User, erro
 
 func seedSettings(ctx context.Context, db *gorm.DB) error {
 	settings := map[string]string{
-		"site_name":          "Prometheus Academy",
-		"copyright_text":     "Academy Prometheus 2026. All rights reserved",
-		"phone":              "+62 000 0000 0000",
-		"email":              "hello@academyprometheus.com",
-		"facebook_url":       "https://facebook.com",
-		"instagram_url":      "https://instagram.com",
-		"tiktok_url":         "https://tiktok.com",
-		"home_students_stat": "10K+",
-		"home_courses_stat":  "4",
-		"home_regions_stat":  "2",
-		"home_support_stat":  "7/24",
+		"site_name":                       "Prometheus Academy",
+		"copyright_text":                  "Academy Prometheus 2026. All rights reserved",
+		"phone":                           "+62 000 0000 0000",
+		"email":                           "hello@academyprometheus.com",
+		"facebook_url":                    "https://facebook.com",
+		"instagram_url":                   "https://instagram.com",
+		"tiktok_url":                      "https://tiktok.com",
+		"home_students_stat":              "10K+",
+		"home_courses_stat":               "4",
+		"home_regions_stat":               "2",
+		"home_support_stat":               "7/24",
+		"mailer_provider":                 "brevo",
+		"mailer_from_email":               "hello@academyprometheus.com",
+		"mailer_from_name":                "Prometheus Academy",
+		"mailer_reply_to":                 "hello@academyprometheus.com",
+		"brevo_api_key":                   "",
+		"mailer_campaign_rate_per_minute": "30",
+	}
+	for key, value := range services.TransactionalTemplateDefaults() {
+		settings[key] = value
 	}
 
 	for key, value := range settings {
 		setting := models.Setting{Key: key, Value: value}
-		if err := db.WithContext(ctx).Where(models.Setting{Key: key}).Assign(setting).FirstOrCreate(&setting).Error; err != nil {
+		if err := db.WithContext(ctx).Where(models.Setting{Key: key}).Attrs(setting).FirstOrCreate(&setting).Error; err != nil {
 			return fmt.Errorf("seed setting %s: %w", key, err)
 		}
+	}
+	if err := db.WithContext(ctx).Model(&models.Setting{}).
+		Where("`key` = ? AND value = ?", services.EmailTemplateLogin, "login_notification").
+		Update("value", "otp_login").Error; err != nil {
+		return fmt.Errorf("migrate login otp setting: %w", err)
 	}
 
 	return nil
@@ -326,11 +342,34 @@ func seedCMS(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("seed banner: %w", err)
 	}
 
+	defaultEmailDesign := models.EmailDesign{
+		Name:            "Default Academy Email",
+		Description:     "Brand email wrapper with logo, heading, body, CTA, and footer blocks.",
+		BackgroundColor: "#F8F9FA",
+		ContentColor:    "#FFFFFF",
+		AccentColor:     "#C9A84C",
+		TextColor:       "#212529",
+		Width:           620,
+		BlocksJSON:      `[{"id":"logo","type":"logo","content":"Prometheus Academy"},{"id":"heading","type":"heading","content":"{{subject}}"},{"id":"body","type":"body","content":"{{content}}"},{"id":"button","type":"button","content":"Visit Dashboard","href":"{{dashboard_url}}"},{"id":"footer","type":"footer","content":"Prometheus Academy<br/>Europe x Asia learning bridge."}]`,
+		IsDefault:       true,
+	}
+	if err := db.WithContext(ctx).Where(models.EmailDesign{Name: defaultEmailDesign.Name}).Attrs(defaultEmailDesign).FirstOrCreate(&defaultEmailDesign).Error; err != nil {
+		return fmt.Errorf("seed email design: %w", err)
+	}
+
 	templates := []models.EmailTemplate{
-		{Key: "welcome", SubjectEn: "Welcome to Prometheus Academy", SubjectID: "Selamat datang di Prometheus Academy", PreheaderEn: "Your account is ready.", PreheaderID: "Akun kamu sudah siap.", BodyEn: "<p>Hi {{name}}, welcome to Prometheus Academy.</p>", BodyID: "<p>Hi {{name}}, selamat datang di Prometheus Academy.</p>", FooterEn: "<p>Prometheus Academy - Europe and Asia learning bridge.</p>", FooterID: "<p>Prometheus Academy - jembatan belajar Eropa dan Asia.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
-		{Key: "invoice", SubjectEn: "Your invoice is ready", SubjectID: "Invoice kamu sudah siap", PreheaderEn: "Invoice {{invoice_number}} is attached.", PreheaderID: "Invoice {{invoice_number}} terlampir.", BodyEn: "<p>Thanks for your purchase, {{name}}.</p>", BodyID: "<p>Terima kasih atas pembeliannya, {{name}}.</p>", FooterEn: "<p>Keep this invoice for your records.</p>", FooterID: "<p>Simpan invoice ini untuk arsip kamu.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
-		{Key: "certificate", SubjectEn: "Your certificate is ready", SubjectID: "Sertifikat kamu sudah siap", PreheaderEn: "Congratulations on completing {{course}}.", PreheaderID: "Selamat menyelesaikan {{course}}.", BodyEn: "<p>Congratulations {{name}}, your certificate is ready.</p>", BodyID: "<p>Selamat {{name}}, sertifikat kamu sudah siap.</p>", FooterEn: "<p>Share your certificate with your network.</p>", FooterID: "<p>Bagikan sertifikat kamu ke network kamu.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
-		{Key: "booking_confirmation", SubjectEn: "Booking confirmed", SubjectID: "Booking terkonfirmasi", PreheaderEn: "Your consultation schedule is confirmed.", PreheaderID: "Jadwal konsultasi kamu sudah terkonfirmasi.", BodyEn: "<p>Your booking is confirmed, {{name}}.</p>", BodyID: "<p>Booking kamu terkonfirmasi, {{name}}.</p>", FooterEn: "<p>Need help? Reply to this email.</p>", FooterID: "<p>Butuh bantuan? Balas email ini.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "campaign_newsletter", SubjectEn: "Prometheus Academy update", SubjectID: "Update Prometheus Academy", PreheaderEn: "Latest learning and program updates.", PreheaderID: "Update terbaru seputar pembelajaran dan program.", BodyEn: seedEmailTemplateHTML("Prometheus Academy newsletter", "{content}", "You receive this because you subscribed to Prometheus Academy updates."), BodyID: seedEmailTemplateHTML("Newsletter Prometheus Academy", "{content}", "Kamu menerima email ini karena berlangganan update Prometheus Academy."), FooterEn: "<p>You receive this because you subscribed to Prometheus Academy updates.</p>", FooterID: "<p>Kamu menerima email ini karena berlangganan update Prometheus Academy.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "campaign_announcement", SubjectEn: "Important announcement", SubjectID: "Pengumuman penting", PreheaderEn: "A new announcement from Prometheus Academy.", PreheaderID: "Pengumuman terbaru dari Prometheus Academy.", BodyEn: seedEmailTemplateHTML("Important announcement", "{content}", "Prometheus Academy - Europe x Asia learning bridge."), BodyID: seedEmailTemplateHTML("Pengumuman penting", "{content}", "Prometheus Academy - jembatan belajar Eropa x Asia."), FooterEn: "<p>Prometheus Academy - Europe x Asia learning bridge.</p>", FooterID: "<p>Prometheus Academy - jembatan belajar Eropa x Asia.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "welcome", SubjectEn: "Welcome to Prometheus Academy", SubjectID: "Selamat datang di Prometheus Academy", PreheaderEn: "Your account is ready.", PreheaderID: "Akun kamu sudah siap.", BodyEn: seedEmailTemplateHTML("Welcome to Prometheus Academy", `<p>Hi {name},</p><p>Your account is ready. You can now explore courses, services, and dashboard tools.</p>`, "Prometheus Academy - Europe x Asia learning bridge."), BodyID: seedEmailTemplateHTML("Selamat datang di Prometheus Academy", `<p>Hi {name},</p><p>Akun kamu sudah siap. Kamu bisa mulai membuka kursus, layanan, dan dashboard.</p>`, "Prometheus Academy - jembatan belajar Eropa x Asia."), FooterEn: "<p>Prometheus Academy - Europe x Asia learning bridge.</p>", FooterID: "<p>Prometheus Academy - jembatan belajar Eropa x Asia.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "email_verification", SubjectEn: "Verify your email", SubjectID: "Verifikasi email kamu", PreheaderEn: "Use the verification code to finish registration.", PreheaderID: "Gunakan kode verifikasi untuk menyelesaikan registrasi.", BodyEn: seedEmailTemplateHTML("Verify your email", `<p>Hi {name},</p><p>Use this verification code to finish your registration:</p><p style="font-size:28px;font-weight:800;letter-spacing:4px;color:#0D1B2E;">{otp}</p>`, "This code expires soon. Do not share it with anyone."), BodyID: seedEmailTemplateHTML("Verifikasi email kamu", `<p>Hi {name},</p><p>Gunakan kode verifikasi ini untuk menyelesaikan registrasi:</p><p style="font-size:28px;font-weight:800;letter-spacing:4px;color:#0D1B2E;">{otp}</p>`, "Kode ini akan kedaluwarsa. Jangan bagikan ke siapa pun."), FooterEn: "<p>This code expires soon. Do not share it with anyone.</p>", FooterID: "<p>Kode ini akan kedaluwarsa. Jangan bagikan ke siapa pun.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "login_notification", SubjectEn: "New login to your account", SubjectID: "Login baru ke akun kamu", PreheaderEn: "Your Prometheus Academy account was just used to sign in.", PreheaderID: "Akun Prometheus Academy kamu baru saja digunakan untuk login.", BodyEn: seedEmailTemplateHTML("New login to your account", `<p>Hi {name},</p><p>Your account was just used to sign in.</p><p>Login time: <strong>{login_time}</strong></p><p><a href="{dashboard_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Open Dashboard</a></p>`, "If this was not you, reset your password immediately."), BodyID: seedEmailTemplateHTML("Login baru ke akun kamu", `<p>Hi {name},</p><p>Akun kamu baru saja digunakan untuk login.</p><p>Waktu login: <strong>{login_time}</strong></p><p><a href="{dashboard_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Buka Dashboard</a></p>`, "Kalau ini bukan kamu, segera reset password."), FooterEn: "<p>If this was not you, reset your password immediately.</p>", FooterID: "<p>Kalau ini bukan kamu, segera reset password.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "otp_login", SubjectEn: "Your login code", SubjectID: "Kode login kamu", PreheaderEn: "Use this code to continue signing in.", PreheaderID: "Gunakan kode ini untuk melanjutkan login.", BodyEn: seedEmailTemplateHTML("Your login code", `<p>Hi {name},</p><p>Here is your login code:</p><p style="font-size:28px;font-weight:800;letter-spacing:4px;color:#0D1B2E;">{otp}</p>`, "If this was not you, ignore this email."), BodyID: seedEmailTemplateHTML("Kode login kamu", `<p>Hi {name},</p><p>Ini kode login kamu:</p><p style="font-size:28px;font-weight:800;letter-spacing:4px;color:#0D1B2E;">{otp}</p>`, "Kalau bukan kamu, abaikan email ini."), FooterEn: "<p>If this was not you, ignore this email.</p>", FooterID: "<p>Kalau bukan kamu, abaikan email ini.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "password_reset", SubjectEn: "Reset your password", SubjectID: "Reset password kamu", PreheaderEn: "Use the secure link to set a new password.", PreheaderID: "Gunakan link aman untuk membuat password baru.", BodyEn: seedEmailTemplateHTML("Reset your password", `<p>Hi {name},</p><p>Click the button below to set a new password.</p><p><a href="{reset_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Reset Password</a></p>`, "If you did not request this, you can ignore this email."), BodyID: seedEmailTemplateHTML("Reset password kamu", `<p>Hi {name},</p><p>Klik tombol di bawah untuk membuat password baru.</p><p><a href="{reset_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Reset Password</a></p>`, "Kalau kamu tidak meminta ini, abaikan email ini."), FooterEn: "<p>If you did not request this, you can ignore this email.</p>", FooterID: "<p>Kalau kamu tidak meminta ini, abaikan email ini.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "invoice", SubjectEn: "Your invoice is ready", SubjectID: "Invoice kamu sudah siap", PreheaderEn: "Invoice {invoice_number} is attached.", PreheaderID: "Invoice {invoice_number} terlampir.", BodyEn: seedEmailTemplateHTML("Your invoice is ready", `<p>Thanks for your purchase, {name}.</p><p>Invoice number: <strong>{invoice_number}</strong></p><p><a href="{invoice_url}" style="color:#0D1B2E;font-weight:800;">Open invoice</a></p>`, "Keep this invoice for your records."), BodyID: seedEmailTemplateHTML("Invoice kamu sudah siap", `<p>Terima kasih atas pembeliannya, {name}.</p><p>Nomor invoice: <strong>{invoice_number}</strong></p><p><a href="{invoice_url}" style="color:#0D1B2E;font-weight:800;">Buka invoice</a></p>`, "Simpan invoice ini untuk arsip kamu."), FooterEn: "<p>Keep this invoice for your records.</p>", FooterID: "<p>Simpan invoice ini untuk arsip kamu.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "payment_success", SubjectEn: "Payment confirmed", SubjectID: "Pembayaran terkonfirmasi", PreheaderEn: "Your order has been paid successfully.", PreheaderID: "Pesanan kamu berhasil dibayar.", BodyEn: seedEmailTemplateHTML("Payment confirmed", `<p>Hi {name},</p><p>Your payment for <strong>{product}</strong> has been confirmed.</p><p><a href="{dashboard_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Open Dashboard</a></p>`, "Thank you for learning with Prometheus Academy."), BodyID: seedEmailTemplateHTML("Pembayaran terkonfirmasi", `<p>Hi {name},</p><p>Pembayaran untuk <strong>{product}</strong> sudah terkonfirmasi.</p><p><a href="{dashboard_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Buka Dashboard</a></p>`, "Terima kasih sudah belajar bersama Prometheus Academy."), FooterEn: "<p>Thank you for learning with Prometheus Academy.</p>", FooterID: "<p>Terima kasih sudah belajar bersama Prometheus Academy.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "deposit_confirmation", SubjectEn: "Deposit confirmed", SubjectID: "Deposit terkonfirmasi", PreheaderEn: "Your deposit has been received.", PreheaderID: "Deposit kamu sudah diterima.", BodyEn: seedEmailTemplateHTML("Deposit confirmed", `<p>Hi {name},</p><p>Your deposit of <strong>{amount}</strong> has been received.</p><p>Reference: <strong>{transaction_id}</strong></p>`, "You can check the transaction from your dashboard."), BodyID: seedEmailTemplateHTML("Deposit terkonfirmasi", `<p>Hi {name},</p><p>Deposit sebesar <strong>{amount}</strong> sudah diterima.</p><p>Referensi: <strong>{transaction_id}</strong></p>`, "Kamu bisa cek transaksi dari dashboard."), FooterEn: "<p>You can check the transaction from your dashboard.</p>", FooterID: "<p>Kamu bisa cek transaksi dari dashboard.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "certificate", SubjectEn: "Your certificate is ready", SubjectID: "Sertifikat kamu sudah siap", PreheaderEn: "Congratulations on completing {course}.", PreheaderID: "Selamat menyelesaikan {course}.", BodyEn: seedEmailTemplateHTML("Your certificate is ready", `<p>Congratulations {name},</p><p>Your certificate for <strong>{course}</strong> is ready.</p><p><a href="{certificate_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Download Certificate</a></p>`, "Share your certificate with your network."), BodyID: seedEmailTemplateHTML("Sertifikat kamu sudah siap", `<p>Selamat {name},</p><p>Sertifikat untuk <strong>{course}</strong> sudah siap.</p><p><a href="{certificate_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Download Sertifikat</a></p>`, "Bagikan sertifikat kamu ke network kamu."), FooterEn: "<p>Share your certificate with your network.</p>", FooterID: "<p>Bagikan sertifikat kamu ke network kamu.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "booking_confirmation", SubjectEn: "Booking confirmed", SubjectID: "Booking terkonfirmasi", PreheaderEn: "Your consultation schedule is confirmed.", PreheaderID: "Jadwal konsultasi kamu sudah terkonfirmasi.", BodyEn: seedEmailTemplateHTML("Booking confirmed", `<p>Your booking is confirmed, {name}.</p><p>Schedule: <strong>{booking_time}</strong></p><p>Consultation: <strong>{service}</strong></p>`, "Need help? Reply to this email."), BodyID: seedEmailTemplateHTML("Booking terkonfirmasi", `<p>Booking kamu terkonfirmasi, {name}.</p><p>Jadwal: <strong>{booking_time}</strong></p><p>Konsultasi: <strong>{service}</strong></p>`, "Butuh bantuan? Balas email ini."), FooterEn: "<p>Need help? Reply to this email.</p>", FooterID: "<p>Butuh bantuan? Balas email ini.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
 	}
 	for _, item := range templates {
 		template := item
@@ -340,6 +379,51 @@ func seedCMS(ctx context.Context, db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func seedEmailTemplateHTML(title string, content string, footer string) string {
+	return `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#F8F9FA;font-family:Arial,Helvetica,sans-serif;color:#212529;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#F8F9FA;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="620" cellspacing="0" cellpadding="0" style="width:620px;max-width:100%;background:#FFFFFF;border-radius:14px;overflow:hidden;border:1px solid #E9ECEF;">
+            <tr><td style="height:4px;background:#C9A84C;font-size:0;line-height:0;">&nbsp;</td></tr>
+            <tr>
+              <td style="padding:24px 28px;border-bottom:1px solid #E9ECEF;">
+                <table role="presentation" cellspacing="0" cellpadding="0" style="width:auto;">
+                  <tr>
+                    <td style="vertical-align:middle;width:42px;">
+                      <span style="display:inline-block;width:42px;height:42px;border-radius:999px;background:#C9A84C;color:#0D1B2E;font-weight:800;line-height:42px;text-align:center;">P</span>
+                    </td>
+                    <td style="vertical-align:middle;padding-left:12px;font-size:16px;font-weight:800;color:#0D1B2E;white-space:nowrap;">{site_name}</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px 28px 8px;">
+                <h1 style="margin:0;color:#212529;font-size:26px;line-height:1.3;font-weight:800;">` + title + `</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px 28px 32px;font-size:15px;line-height:1.7;color:#343A40;">
+                ` + content + `
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 28px;background:#F8F9FA;border-top:1px solid #E9ECEF;color:#6C757D;font-size:12px;line-height:1.6;">
+                <strong style="color:#0D1B2E;">{site_name}</strong><br/>
+                ` + footer + `
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`
 }
 
 func seedTalentAndPartners(ctx context.Context, db *gorm.DB) error {

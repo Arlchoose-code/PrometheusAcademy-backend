@@ -36,15 +36,28 @@ func (h *Controller) CreateUser(c *gin.Context) {
 		return
 	}
 
-	user, tokens, err := h.authService.Register(c.Request.Context(), req)
+	_, tokens, challenge, err := h.authService.Register(c.Request.Context(), req)
 	if err != nil {
+		if !strings.Contains(err.Error(), "already registered") && !strings.Contains(err.Error(), "registration") {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	if challenge != nil && challenge.RequiresOTP {
+		c.JSON(http.StatusAccepted, structs.Response{Success: true, Message: challenge.Message, Data: structs.AuthChallengeResponse{
+			RequiresOTP: true,
+			Purpose:     challenge.Purpose,
+			Email:       challenge.Email,
+			Message:     challenge.Message,
+		}})
 		return
 	}
 
 	http.SetCookie(c.Writer, services.AccessTokenCookie(tokens.AccessToken, tokens.AccessExpiresAt, h.secureCookie))
 	http.SetCookie(c.Writer, services.RefreshTokenCookie(tokens.RefreshToken, tokens.RefreshExpiresAt, h.secureCookie))
-	c.JSON(http.StatusCreated, structs.Response{Success: true, Message: "Registration successful", Data: h.authService.UserResponse(user)})
+	c.JSON(http.StatusCreated, structs.Response{Success: true, Message: "Registration successful"})
 }
 
 func (h *Controller) Login(c *gin.Context) {
@@ -54,15 +67,89 @@ func (h *Controller) Login(c *gin.Context) {
 		return
 	}
 
-	user, tokens, err := h.authService.Login(c.Request.Context(), req)
+	user, tokens, challenge, err := h.authService.Login(c.Request.Context(), req)
 	if err != nil {
+		if err.Error() != "invalid credentials" {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to send verification code"})
+			return
+		}
 		c.JSON(http.StatusUnauthorized, structs.Response{Success: false, Message: "Invalid credentials"})
+		return
+	}
+	if challenge != nil && challenge.RequiresOTP {
+		c.JSON(http.StatusAccepted, structs.Response{Success: true, Message: challenge.Message, Data: structs.AuthChallengeResponse{
+			RequiresOTP: true,
+			Purpose:     challenge.Purpose,
+			Email:       challenge.Email,
+			Message:     challenge.Message,
+		}})
 		return
 	}
 
 	http.SetCookie(c.Writer, services.AccessTokenCookie(tokens.AccessToken, tokens.AccessExpiresAt, h.secureCookie))
 	http.SetCookie(c.Writer, services.RefreshTokenCookie(tokens.RefreshToken, tokens.RefreshExpiresAt, h.secureCookie))
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Login successful", Data: h.authService.UserResponse(user)})
+}
+
+func (h *Controller) VerifyAuthOTP(c *gin.Context) {
+	var req structs.VerifyAuthOTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid verification code"})
+		return
+	}
+	user, tokens, err := h.authService.VerifyAuthOTP(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	http.SetCookie(c.Writer, services.AccessTokenCookie(tokens.AccessToken, tokens.AccessExpiresAt, h.secureCookie))
+	http.SetCookie(c.Writer, services.RefreshTokenCookie(tokens.RefreshToken, tokens.RefreshExpiresAt, h.secureCookie))
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Verification successful", Data: h.authService.UserResponse(user)})
+}
+
+func (h *Controller) ResendAuthOTP(c *gin.Context) {
+	var req structs.ResendAuthOTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid OTP request"})
+		return
+	}
+	challenge, err := h.authService.ResendAuthOTP(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, structs.Response{Success: true, Message: challenge.Message, Data: structs.AuthChallengeResponse{
+		RequiresOTP: true,
+		Purpose:     challenge.Purpose,
+		Email:       challenge.Email,
+		Message:     challenge.Message,
+	}})
+}
+
+func (h *Controller) RequestPasswordReset(c *gin.Context) {
+	var req structs.RequestPasswordResetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Valid email is required"})
+		return
+	}
+	if err := h.authService.RequestPasswordReset(c.Request.Context(), req); err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to request password reset"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "If the email exists, reset instructions have been sent"})
+}
+
+func (h *Controller) ConfirmPasswordReset(c *gin.Context) {
+	var req structs.ConfirmPasswordResetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid reset payload"})
+		return
+	}
+	if err := h.authService.ConfirmPasswordReset(c.Request.Context(), req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Password has been reset"})
 }
 
 func (h *Controller) Refresh(c *gin.Context) {

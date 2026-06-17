@@ -98,6 +98,7 @@ type MediaFile struct {
 
 type EmailTemplate struct {
 	BaseModel
+	DesignID        uint   `gorm:"not null;default:0;index" json:"design_id"`
 	Key             string `gorm:"size:191;not null;uniqueIndex" json:"key"`
 	SubjectEn       string `gorm:"size:191;not null" json:"subject_en"`
 	SubjectID       string `gorm:"size:191;not null" json:"subject_id"`
@@ -105,8 +106,56 @@ type EmailTemplate struct {
 	PreheaderID     string `gorm:"size:255" json:"preheader_id"`
 	BodyEn          string `gorm:"type:longtext;not null" json:"body_en"`
 	BodyID          string `gorm:"type:longtext;not null" json:"body_id"`
+	DesignJSON      string `gorm:"type:longtext" json:"design_json"`
+	DesignJSONEn    string `gorm:"type:longtext" json:"design_json_en"`
+	DesignJSONID    string `gorm:"type:longtext" json:"design_json_id"`
 	FooterEn        string `gorm:"type:longtext" json:"footer_en"`
 	FooterID        string `gorm:"type:longtext" json:"footer_id"`
+	SenderName      string `gorm:"size:191" json:"sender_name"`
+	SenderEmail     string `gorm:"size:191" json:"sender_email"`
 	BackgroundColor string `gorm:"size:30;not null;default:'#F8F9FA'" json:"background_color"`
 	AccentColor     string `gorm:"size:30;not null;default:'#C9A84C'" json:"accent_color"`
+}
+
+type EmailDesign struct {
+	BaseModel
+	Name            string `gorm:"size:191;not null" json:"name"`
+	Description     string `gorm:"type:text" json:"description"`
+	BackgroundColor string `gorm:"size:30;not null;default:'#F8F9FA'" json:"background_color"`
+	ContentColor    string `gorm:"size:30;not null;default:'#FFFFFF'" json:"content_color"`
+	AccentColor     string `gorm:"size:30;not null;default:'#C9A84C'" json:"accent_color"`
+	TextColor       string `gorm:"size:30;not null;default:'#212529'" json:"text_color"`
+	Width           int    `gorm:"not null;default:620" json:"width"`
+	BlocksJSON      string `gorm:"type:longtext" json:"blocks_json"`
+	IsDefault       bool   `gorm:"not null;default:false;index" json:"is_default"`
+}
+
+type EmailCampaign struct {
+	BaseModel
+	DesignID           uint       `gorm:"not null;default:0;index" json:"design_id"`
+	TemplateKey        string     `gorm:"size:191;index" json:"template_key"`
+	Name               string     `gorm:"size:191" json:"name"`
+	Subject            string     `gorm:"size:191;not null" json:"subject"`
+	SubjectEn          string     `gorm:"size:191" json:"subject_en"`
+	SubjectID          string     `gorm:"size:191" json:"subject_id"`
+	HTML               string     `gorm:"type:longtext;not null" json:"html"`
+	HTMLEn             string     `gorm:"type:longtext" json:"html_en"`
+	HTMLID             string     `gorm:"type:longtext" json:"html_id"`
+	Text               string     `gorm:"type:longtext" json:"text"`
+	TextEn             string     `gorm:"type:longtext" json:"text_en"`
+	TextID             string     `gorm:"type:longtext" json:"text_id"`
+	Target             string     `gorm:"size:30;not null;index" json:"target"`
+	UserIDsJSON        string     `gorm:"type:longtext" json:"user_ids_json"`
+	SenderName         string     `gorm:"size:191" json:"sender_name"`
+	SenderEmail        string     `gorm:"size:191" json:"sender_email"`
+	RateLimitPerMinute int        `gorm:"not null;default:30" json:"rate_limit_per_minute"`
+	Status             string     `gorm:"size:30;not null;default:'draft';index" json:"status"`
+	RecipientCount     int        `gorm:"not null;default:0" json:"recipient_count"`
+	SentCount          int        `gorm:"not null;default:0" json:"sent_count"`
+	FailedCount        int        `gorm:"not null;default:0" json:"failed_count"`
+	FailedJSON         string     `gorm:"type:longtext" json:"failed_json"`
+	CreatedBy          uint       `gorm:"not null;default:0;index" json:"created_by"`
+	QueuedAt           *time.Time `json:"queued_at"`
+	StartedAt          *time.Time `json:"started_at"`
+	FinishedAt         *time.Time `json:"finished_at"`
 }

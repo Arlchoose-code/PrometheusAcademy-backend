@@ -1,5 +1,7 @@
 package structs
 
+import "time"
+
 type RegisterRequest struct {
 	Name     string `json:"name" binding:"required,min=2,max=191"`
 	Email    string `json:"email" binding:"required,email,max=191"`
@@ -10,6 +12,24 @@ type RegisterRequest struct {
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email,max=191"`
 	Password string `json:"password" binding:"required,min=8,max=72"`
+}
+
+type VerifyAuthOTPRequest struct {
+	Email   string `json:"email" binding:"required,email,max=191"`
+	Purpose string `json:"purpose" binding:"required,oneof=register login"`
+	Code    string `json:"code" binding:"required,len=6"`
+}
+
+type ResendAuthOTPRequest struct {
+	Email   string `json:"email" binding:"required,email,max=191"`
+	Purpose string `json:"purpose" binding:"required,oneof=register login"`
+}
+
+type AuthChallengeResponse struct {
+	RequiresOTP bool   `json:"requires_otp"`
+	Purpose     string `json:"purpose"`
+	Email       string `json:"email"`
+	Message     string `json:"message"`
 }
 
 type UpdateProfileRequest struct {
@@ -24,6 +44,15 @@ type UpdateProfileRequest struct {
 }
 
 type ResetPasswordRequest struct {
+	Password string `json:"password" binding:"required,min=8,max=72"`
+}
+
+type RequestPasswordResetRequest struct {
+	Email string `json:"email" binding:"required,email,max=191"`
+}
+
+type ConfirmPasswordResetRequest struct {
+	Token    string `json:"token" binding:"required"`
 	Password string `json:"password" binding:"required,min=8,max=72"`
 }
 
@@ -43,15 +72,16 @@ type UserRequest struct {
 }
 
 type UserResponse struct {
-	ID        uint                `json:"id"`
-	Name      string              `json:"name"`
-	Email     string              `json:"email"`
-	Avatar    string              `json:"avatar"`
-	Phone     string              `json:"phone"`
-	IsStudent bool                `json:"is_student"`
-	IsAdmin   bool                `json:"is_admin"`
-	Language  string              `json:"language"`
-	Profile   UserProfileResponse `json:"profile"`
+	ID              uint                `json:"id"`
+	Name            string              `json:"name"`
+	Email           string              `json:"email"`
+	Avatar          string              `json:"avatar"`
+	Phone           string              `json:"phone"`
+	IsStudent       bool                `json:"is_student"`
+	IsAdmin         bool                `json:"is_admin"`
+	Language        string              `json:"language"`
+	EmailVerifiedAt *time.Time          `json:"email_verified_at,omitempty"`
+	Profile         UserProfileResponse `json:"profile"`
 }
 
 type UserProfileRequest struct {

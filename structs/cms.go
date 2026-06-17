@@ -137,6 +137,7 @@ type MediaFileResponse struct {
 }
 
 type EmailTemplateRequest struct {
+	DesignID        uint   `json:"design_id"`
 	Key             string `json:"key"`
 	SubjectEn       string `json:"subject_en"`
 	SubjectID       string `json:"subject_id"`
@@ -144,6 +145,9 @@ type EmailTemplateRequest struct {
 	PreheaderID     string `json:"preheader_id"`
 	BodyEn          string `json:"body_en"`
 	BodyID          string `json:"body_id"`
+	DesignJSON      string `json:"design_json"`
+	DesignJSONEn    string `json:"design_json_en"`
+	DesignJSONID    string `json:"design_json_id"`
 	FooterEn        string `json:"footer_en"`
 	FooterID        string `json:"footer_id"`
 	BackgroundColor string `json:"background_color"`
@@ -153,4 +157,57 @@ type EmailTemplateRequest struct {
 type EmailTemplateResponse struct {
 	ModelResponse
 	EmailTemplateRequest
+}
+
+type EmailDesignRequest struct {
+	Name            string `json:"name" binding:"required"`
+	Description     string `json:"description"`
+	BackgroundColor string `json:"background_color"`
+	ContentColor    string `json:"content_color"`
+	AccentColor     string `json:"accent_color"`
+	TextColor       string `json:"text_color"`
+	Width           int    `json:"width"`
+	BlocksJSON      string `json:"blocks_json"`
+	IsDefault       bool   `json:"is_default"`
+}
+
+type MailerTestRequest struct {
+	ToEmail string `json:"to_email" binding:"required,email"`
+	ToName  string `json:"to_name"`
+	Subject string `json:"subject" binding:"required"`
+	HTML    string `json:"html"`
+	Text    string `json:"text"`
+}
+
+type BrevoSenderRequest struct {
+	Name  string `json:"name" binding:"required"`
+	Email string `json:"email" binding:"required,email"`
+}
+
+type MailerBroadcastRequest struct {
+	Target  string `json:"target" binding:"required"`
+	UserIDs []uint `json:"user_ids"`
+	Subject string `json:"subject" binding:"required"`
+	HTML    string `json:"html" binding:"required"`
+	Text    string `json:"text"`
+}
+
+type MailerCampaignRequest struct {
+	DesignID           uint   `json:"design_id"`
+	TemplateKey        string `json:"template_key"`
+	Name               string `json:"name"`
+	Target             string `json:"target" binding:"required"`
+	UserIDs            []uint `json:"user_ids"`
+	Subject            string `json:"subject" binding:"required"`
+	SubjectEn          string `json:"subject_en"`
+	SubjectID          string `json:"subject_id"`
+	HTML               string `json:"html" binding:"required"`
+	HTMLEn             string `json:"html_en"`
+	HTMLID             string `json:"html_id"`
+	Text               string `json:"text"`
+	TextEn             string `json:"text_en"`
+	TextID             string `json:"text_id"`
+	SenderName         string `json:"sender_name"`
+	SenderEmail        string `json:"sender_email" binding:"omitempty,email"`
+	RateLimitPerMinute int    `json:"rate_limit_per_minute"`
 }
