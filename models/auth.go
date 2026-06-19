@@ -4,17 +4,20 @@ import "time"
 
 type User struct {
 	BaseModel
-	Name            string     `gorm:"size:191;not null" json:"name"`
-	Email           string     `gorm:"size:191;not null;uniqueIndex" json:"email"`
-	Password        string     `gorm:"size:255;not null" json:"-"`
-	Avatar          string     `gorm:"size:255" json:"avatar"`
-	Phone           string     `gorm:"size:50" json:"phone"`
-	IsStudent       bool       `gorm:"not null;default:true" json:"is_student"`
-	IsAdmin         bool       `gorm:"not null;default:false;index" json:"is_admin"`
-	Language        string     `gorm:"size:5;not null;default:'en'" json:"language"`
-	TokenVersion    int        `gorm:"not null;default:0" json:"-"`
-	EmailVerifiedAt *time.Time `json:"email_verified_at"`
-	LastLoginOTPAt  *time.Time `json:"last_login_otp_at"`
+	Name                string     `gorm:"size:191;not null" json:"name"`
+	Email               string     `gorm:"size:191;not null;uniqueIndex" json:"email"`
+	Password            string     `gorm:"size:255;not null" json:"-"`
+	Avatar              string     `gorm:"size:255" json:"avatar"`
+	Phone               string     `gorm:"size:50" json:"phone"`
+	IsStudent           bool       `gorm:"not null;default:true" json:"is_student"`
+	IsAdmin             bool       `gorm:"not null;default:false;index" json:"is_admin"`
+	IsInstructor        bool       `gorm:"not null;default:false;index" json:"is_instructor"`
+	InstructorGrantedAt *time.Time `json:"instructor_granted_at"`
+	InstructorGrantedBy *uint      `gorm:"index" json:"instructor_granted_by"`
+	Language            string     `gorm:"size:5;not null;default:'en'" json:"language"`
+	TokenVersion        int        `gorm:"not null;default:0" json:"-"`
+	EmailVerifiedAt     *time.Time `json:"email_verified_at"`
+	LastLoginOTPAt      *time.Time `json:"last_login_otp_at"`
 }
 
 type AuthEmailOTP struct {

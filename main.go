@@ -68,6 +68,7 @@ func main() {
 	routes.RegisterPublicRoutes(api, db, cfg)
 	routes.RegisterAuthRoutes(api, db, cfg)
 	routes.RegisterDashboardRoutes(api, db, cfg)
+	routes.RegisterInstructorRoutes(api, db, cfg)
 	routes.RegisterAdminRoutes(api, db, cfg)
 
 	server := &http.Server{

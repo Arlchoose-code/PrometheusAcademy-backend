@@ -26,6 +26,10 @@ func RegisterAdminRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Config
 
 	admin.GET("/notifications", adminController.ListNotifications)
 	admin.POST("/notifications/mark-all-read", adminController.MarkAllNotificationsRead)
+	admin.GET("/communications", adminController.ListCommunications)
+	admin.GET("/communications/:id/messages", adminController.ListCommunicationMessages)
+	admin.POST("/communications/:id/messages", adminController.ReplyCommunication)
+	admin.PATCH("/communications/:id", adminController.UpdateCommunicationStatus)
 
 	admin.POST("/users/:id/reset-password", adminController.ResetUserPassword)
 	admin.PATCH("/users/:id/role", adminController.UpdateUserRole)
@@ -49,8 +53,8 @@ func RegisterAdminRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Config
 	admin.GET("/mailer/campaigns", adminController.ListMailerCampaigns)
 	admin.POST("/mailer/campaigns/send", adminController.QueueMailerCampaign)
 	admin.GET("/mailer/senders", adminController.ListMailerSenders)
-	admin.POST("/mailer/senders", adminController.CreateMailerSender)
-	admin.PUT("/mailer/senders/:id", adminController.UpdateMailerSender)
+	admin.POST("/mailer/senders", adminController.SaveMailerSender)
+	admin.PUT("/mailer/senders/:id", adminController.SaveMailerSender)
 	admin.DELETE("/mailer/senders/:id", adminController.DeleteMailerSender)
 
 	registerCourseAdminRoutes(admin, adminController)
@@ -74,6 +78,10 @@ func registerCourseAdminRoutes(admin *gin.RouterGroup, adminController *admincon
 	admin.PUT("/courses/:id", adminController.UpdateCourse)
 	admin.DELETE("/courses/:id", adminController.DeleteCourse)
 	admin.POST("/courses/:id/thumbnail", adminController.UpdateCourseThumbnail)
+	admin.POST("/courses/:id/add-ons", adminController.CreateCourseAddon)
+	admin.PUT("/course-addons/:id", adminController.UpdateCourseAddon)
+	admin.POST("/course-addons/:id/file", adminController.UpdateCourseAddonFile)
+	admin.DELETE("/course-addons/:id", adminController.DeleteCourseAddon)
 
 	admin.POST("/courses/:id/modules", adminController.CreateCourseModule)
 	admin.PUT("/modules/:id", adminController.UpdateCourseModule)
@@ -127,6 +135,7 @@ func registerCMSAdminRoutes(admin *gin.RouterGroup, adminController *admincontro
 	admin.DELETE("/cms/faqs/:id", adminController.DeleteFAQ)
 
 	admin.GET("/cms/testimonials", adminController.ListTestimonials)
+	admin.POST("/cms/testimonials/sync-google", adminController.SyncGoogleTestimonials)
 	admin.POST("/cms/testimonials", adminController.CreateTestimonial)
 	admin.PUT("/cms/testimonials/:id", adminController.UpdateTestimonial)
 	admin.DELETE("/cms/testimonials/:id", adminController.DeleteTestimonial)
@@ -190,6 +199,7 @@ func registerTalentAdminRoutes(admin *gin.RouterGroup, adminController *admincon
 	admin.GET("/talent/jobs/:id/applications", adminController.ListTalentJobApplications)
 	admin.PUT("/talent/applications/:id", adminController.UpdateTalentApplication)
 	admin.GET("/talent/applications/:id/cv", adminController.DownloadTalentApplicationCV)
+	admin.POST("/talent/review-invitations", adminController.SendTalentReviewInvitation)
 
 	admin.GET("/partner/applications", adminController.ListPartnerApplications)
 	admin.PUT("/partner/applications/:id", adminController.UpdatePartnerApplication)

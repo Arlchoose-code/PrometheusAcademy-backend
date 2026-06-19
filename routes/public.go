@@ -39,6 +39,8 @@ func registerTalentPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config
 	router.GET("/talent/landing", publicController.GetTalentLanding)
 	router.POST("/talent/hiring", publicController.CreateHiringInquiry)
 	router.POST("/talent/plus", publicController.CreateTalentPlusApplication)
+	router.GET("/talent/review-invitations/:token", publicController.GetTalentReviewInvitation)
+	router.POST("/talent/review-invitations/:token", publicController.SubmitTalentReviewInvitation)
 	router.GET("/partners", publicController.ListPartners)
 	router.POST("/partner/apply", publicController.CreatePartnerApplication)
 	router.GET("/events", publicController.ListEvents)

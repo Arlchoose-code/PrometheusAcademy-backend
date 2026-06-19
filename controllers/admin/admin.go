@@ -1,8 +1,10 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,17 +20,19 @@ import (
 )
 
 type Controller struct {
-	db            *gorm.DB
-	cfg           config.Config
-	uploadService *services.UploadService
+	db                   *gorm.DB
+	cfg                  config.Config
+	uploadService        *services.UploadService
+	communicationService *services.CommunicationService
 }
 
 func NewController(db *gorm.DB, cfg config.Config, uploadService *services.UploadService) *Controller {
-	return &Controller{db: db, cfg: cfg, uploadService: uploadService}
+	return &Controller{db: db, cfg: cfg, uploadService: uploadService, communicationService: services.NewCommunicationService(db)}
 }
 
 func (h *Controller) GetOverview(c *gin.Context) {
 	ctx := c.Request.Context()
+	funnelPeriod := crmFunnelPeriod(c.Query("funnel_period"), time.Now().UTC())
 	var totalStudents int64
 	var revenue int64
 	var activeCourses int64
@@ -67,6 +71,7 @@ func (h *Controller) GetOverview(c *gin.Context) {
 			"revenue":        revenue,
 			"active_courses": activeCourses,
 			"new_leads":      contactLeads + hiringLeads + partnerLeads,
+			"crm_funnel":     h.crmFunnel(ctx, funnelPeriod),
 			"trends": gin.H{
 				"total_students": 12,
 				"revenue":        18,
@@ -75,6 +80,146 @@ func (h *Controller) GetOverview(c *gin.Context) {
 			},
 		},
 	})
+}
+
+type funnelPeriod struct {
+	Key   string
+	Label string
+	From  *time.Time
+}
+
+func crmFunnelPeriod(value string, now time.Time) funnelPeriod {
+	switch value {
+	case "month":
+		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		return funnelPeriod{Key: "month", Label: "This month", From: &start}
+	case "30d":
+		start := now.AddDate(0, 0, -30)
+		return funnelPeriod{Key: "30d", Label: "Last 30 days", From: &start}
+	case "90d":
+		start := now.AddDate(0, 0, -90)
+		return funnelPeriod{Key: "90d", Label: "Last 90 days", From: &start}
+	default:
+		return funnelPeriod{Key: "all", Label: "All time"}
+	}
+}
+
+func (h *Controller) crmFunnel(ctx context.Context, period funnelPeriod) gin.H {
+	registeredQuery := h.db.Model(&models.User{}).Where("is_student = ?", true)
+	bookedCallsQuery := h.db.Model(&models.ConsultationBooking{}).Distinct("user_id")
+	jobApplicationsQuery := h.db.Model(&models.TalentJobApplication{})
+	plusApplicationsQuery := h.db.Model(&models.TalentPlusApplication{})
+	partnerApplicationsQuery := h.db.Model(&models.PartnerApplication{})
+	enrolledQuery := h.db.Model(&models.CourseEnrollment{}).Distinct("user_id")
+	activeStudentsQuery := h.db.Model(&models.TopicProgress{}).Distinct("user_id")
+	if period.From != nil {
+		registeredQuery = registeredQuery.Where("created_at >= ?", *period.From)
+		bookedCallsQuery = bookedCallsQuery.Where("created_at >= ?", *period.From)
+		jobApplicationsQuery = jobApplicationsQuery.Where("created_at >= ?", *period.From)
+		plusApplicationsQuery = plusApplicationsQuery.Where("created_at >= ?", *period.From)
+		partnerApplicationsQuery = partnerApplicationsQuery.Where("created_at >= ?", *period.From)
+		enrolledQuery = enrolledQuery.Where("enrolled_at >= ?", *period.From)
+		activeStudentsQuery = activeStudentsQuery.Where("completed_at >= ?", *period.From)
+	}
+
+	registeredIDs := userIDSet(ctx, registeredQuery.Select("id"), "id")
+	bookedIDs := userIDSet(ctx, bookedCallsQuery, "user_id")
+	applicationIDs := h.crmApplicationUserIDs(ctx, period)
+	enrolledIDs := userIDSet(ctx, enrolledQuery, "user_id")
+	activeIDs := userIDSet(ctx, activeStudentsQuery, "user_id")
+
+	registered := int64(len(registeredIDs))
+	bookedCohort := intersectUserSets(registeredIDs, bookedIDs)
+	applicationCohort := intersectUserSets(bookedCohort, applicationIDs)
+	enrolledCohort := intersectUserSets(applicationCohort, enrolledIDs)
+	activeCohort := intersectUserSets(enrolledCohort, activeIDs)
+	jobApplications := countRows(ctx, jobApplicationsQuery)
+	plusApplications := countRows(ctx, plusApplicationsQuery)
+	partnerApplications := countRows(ctx, partnerApplicationsQuery)
+	stages := []gin.H{
+		funnelStage("Registered", registered, registered),
+		funnelStage("Booked a Call", int64(len(bookedCohort)), registered),
+		funnelStage("Application Submitted", int64(len(applicationCohort)), int64(len(bookedCohort))),
+		funnelStage("Enrolled", int64(len(enrolledCohort)), int64(len(applicationCohort))),
+		funnelStage("Active Student", int64(len(activeCohort)), int64(len(enrolledCohort))),
+	}
+	return gin.H{
+		"period":       period.Key,
+		"period_label": period.Label,
+		"from":         period.From,
+		"stages":       stages,
+		"method":       "strict_user_cohort",
+		"application_segments": []gin.H{
+			{"key": "talent_jobs", "label": "Job Applications", "count": jobApplications},
+			{"key": "talent_plus", "label": "Talent Bridge+", "count": plusApplications},
+			{"key": "partners", "label": "Partner Applications", "count": partnerApplications},
+		},
+	}
+}
+
+func (h *Controller) crmApplicationUserIDs(ctx context.Context, period funnelPeriod) map[uint]struct{} {
+	parts := []string{
+		"SELECT LOWER(email) AS email FROM talent_job_applications",
+		"SELECT LOWER(email) AS email FROM talent_plus_applications",
+		"SELECT LOWER(email) AS email FROM partner_applications",
+	}
+	args := []any{}
+	if period.From != nil {
+		for index, part := range parts {
+			parts[index] = part + " WHERE created_at >= ?"
+			args = append(args, *period.From)
+		}
+	}
+	args = append(args, true)
+	query := fmt.Sprintf(`
+		SELECT DISTINCT users.id
+		FROM users
+		JOIN (%s) applications ON LOWER(users.email) = applications.email
+		WHERE users.is_student = ?
+	`, strings.Join(parts, " UNION ALL "))
+	var ids []uint
+	_ = h.db.WithContext(ctx).Raw(query, args...).Scan(&ids).Error
+	return uintSet(ids)
+}
+
+func userIDSet(ctx context.Context, query *gorm.DB, column string) map[uint]struct{} {
+	var ids []uint
+	_ = query.WithContext(ctx).Pluck(column, &ids).Error
+	return uintSet(ids)
+}
+
+func uintSet(ids []uint) map[uint]struct{} {
+	result := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		if id != 0 {
+			result[id] = struct{}{}
+		}
+	}
+	return result
+}
+
+func intersectUserSets(base map[uint]struct{}, next map[uint]struct{}) map[uint]struct{} {
+	result := make(map[uint]struct{})
+	for id := range base {
+		if _, ok := next[id]; ok {
+			result[id] = struct{}{}
+		}
+	}
+	return result
+}
+
+func countRows(ctx context.Context, query *gorm.DB) int64 {
+	var total int64
+	_ = query.WithContext(ctx).Count(&total).Error
+	return total
+}
+
+func funnelStage(label string, count int64, previous int64) gin.H {
+	conversion := 0.0
+	if previous > 0 {
+		conversion = float64(count) / float64(previous) * 100
+	}
+	return gin.H{"label": label, "count": count, "conversion": conversion}
 }
 
 func (h *Controller) ListContactLeads(c *gin.Context) {
@@ -91,23 +236,27 @@ func (h *Controller) ListNewsletterSubscribers(c *gin.Context) {
 
 func (h *Controller) ListUsers(c *gin.Context) {
 	type row struct {
-		ID              uint       `json:"id"`
-		Name            string     `json:"name"`
-		Email           string     `json:"email"`
-		Avatar          string     `json:"avatar"`
-		Phone           string     `json:"phone"`
-		IsStudent       bool       `json:"is_student"`
-		IsAdmin         bool       `json:"is_admin"`
-		Language        string     `json:"language"`
-		CreatedAt       time.Time  `json:"created_at"`
-		LastActiveAt    *time.Time `json:"last_active_at"`
-		EnrolledCourses int        `json:"enrolled_courses"`
-		Transactions    int        `json:"transactions"`
-		TotalSpent      int        `json:"total_spent"`
+		ID                  uint       `json:"id"`
+		Name                string     `json:"name"`
+		Email               string     `json:"email"`
+		Avatar              string     `json:"avatar"`
+		Phone               string     `json:"phone"`
+		IsStudent           bool       `json:"is_student"`
+		IsAdmin             bool       `json:"is_admin"`
+		IsInstructor        bool       `json:"is_instructor"`
+		InstructorGrantedAt *time.Time `json:"instructor_granted_at"`
+		InstructorGrantedBy *uint      `json:"instructor_granted_by"`
+		Language            string     `json:"language"`
+		CreatedAt           time.Time  `json:"created_at"`
+		LastActiveAt        *time.Time `json:"last_active_at"`
+		EnrolledCourses     int        `json:"enrolled_courses"`
+		Transactions        int        `json:"transactions"`
+		TotalSpent          int        `json:"total_spent"`
 	}
 	var rows []row
 	if err := h.db.WithContext(c.Request.Context()).Raw(`
-		SELECT u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.language, u.created_at,
+		SELECT u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.is_instructor,
+			u.instructor_granted_at, u.instructor_granted_by, u.language, u.created_at,
 			MAX(COALESCE(o.created_at, e.created_at, u.updated_at)) AS last_active_at,
 			COUNT(DISTINCT e.id) AS enrolled_courses,
 			COUNT(DISTINCT o.id) AS transactions,
@@ -115,7 +264,8 @@ func (h *Controller) ListUsers(c *gin.Context) {
 		FROM users u
 		LEFT JOIN course_enrollments e ON e.user_id = u.id
 		LEFT JOIN orders o ON o.user_id = u.id
-		GROUP BY u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.language, u.created_at
+		GROUP BY u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.is_instructor,
+			u.instructor_granted_at, u.instructor_granted_by, u.language, u.created_at
 		ORDER BY u.created_at DESC
 	`).Scan(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load users"})
@@ -126,13 +276,8 @@ func (h *Controller) ListUsers(c *gin.Context) {
 
 func (h *Controller) ListNotifications(c *gin.Context) {
 	user := c.MustGet("user").(models.User)
-	var rows []models.Notification
-	if err := h.db.WithContext(c.Request.Context()).Where("user_id = ?", user.ID).Order("created_at desc").Limit(20).Find(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load notifications"})
-		return
-	}
-	var unread int64
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.Notification{}).Where("user_id = ? AND is_read = ?", user.ID, false).Count(&unread).Error; err != nil {
+	rows, unread, err := services.NotificationInbox(c.Request.Context(), h.db, user.ID, 20)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count notifications"})
 		return
 	}
@@ -141,7 +286,7 @@ func (h *Controller) ListNotifications(c *gin.Context) {
 
 func (h *Controller) MarkAllNotificationsRead(c *gin.Context) {
 	user := c.MustGet("user").(models.User)
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.Notification{}).Where("user_id = ?", user.ID).Update("is_read", true).Error; err != nil {
+	if err := services.MarkAllNotificationsRead(c.Request.Context(), h.db, user.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update notifications"})
 		return
 	}
@@ -189,8 +334,8 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 	}
 
 	role := strings.ToLower(strings.TrimSpace(req.Role))
-	if role != "admin" && role != "student" {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Role must be admin or student"})
+	if role != "admin" && role != "student" && role != "instructor" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Role must be admin, instructor, or student"})
 		return
 	}
 
@@ -214,7 +359,31 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 	}
 
 	updates := map[string]any{"is_student": true}
-	if role == "admin" {
+	if role == "instructor" {
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		if !enabled {
+			var assignedCourses int64
+			if err := h.db.WithContext(c.Request.Context()).Model(&models.Course{}).Where("instructor_id = ?", uint(userID)).Count(&assignedCourses).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check assigned courses"})
+				return
+			}
+			if assignedCourses > 0 {
+				c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Reassign this instructor's courses before removing the role"})
+				return
+			}
+			updates["is_instructor"] = false
+			updates["instructor_granted_at"] = nil
+			updates["instructor_granted_by"] = nil
+		} else {
+			now := time.Now().UTC()
+			updates["is_instructor"] = true
+			updates["instructor_granted_at"] = &now
+			updates["instructor_granted_by"] = currentUser.ID
+		}
+	} else if role == "admin" {
 		updates["is_admin"] = true
 	} else {
 		updates["is_admin"] = false
@@ -264,6 +433,19 @@ func (h *Controller) ListSettings(c *gin.Context) {
 	for _, row := range rows {
 		settings[row.Key] = row.Value
 	}
+	limit, _ := strconv.Atoi(settings["monthly_enrollment_limit"])
+	start := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+	var enrolled int64
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.CourseEnrollment{}).Where("enrolled_at >= ?", start).Distinct("user_id").Count(&enrolled).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count monthly enrollments"})
+		return
+	}
+	remaining := limit - int(enrolled)
+	if remaining < 0 {
+		remaining = 0
+	}
+	settings["monthly_enrollment_count"] = strconv.FormatInt(enrolled, 10)
+	settings["monthly_enrollment_remaining"] = strconv.Itoa(remaining)
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Settings loaded", Data: settings})
 }
 
@@ -281,6 +463,17 @@ func (h *Controller) UpdateSettings(c *gin.Context) {
 		}
 		if key == "phone" && !services.ValidPhone(value, false) {
 			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid phone number"})
+			return
+		}
+		if key == "monthly_enrollment_limit" {
+			limit, err := strconv.Atoi(value)
+			if err != nil || limit < 0 || limit > 1000000 {
+				c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Monthly enrollment limit must be between 0 and 1,000,000"})
+				return
+			}
+		}
+		if key == "monthly_enrollment_banner_enabled" && value != "true" && value != "false" {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Enrollment banner enabled must be true or false"})
 			return
 		}
 		setting := models.Setting{Key: key, Value: value}
@@ -540,7 +733,7 @@ func (h *Controller) TestMailer(c *gin.Context) {
 		return
 	}
 
-	messageID, err := services.SendBrevoEmail(c.Request.Context(), settings, services.MailMessage{
+	messageID, err := services.SendMailerEmail(c.Request.Context(), settings, services.MailMessage{
 		ToEmail: req.ToEmail,
 		ToName:  req.ToName,
 		Subject: req.Subject,
@@ -722,62 +915,32 @@ func (h *Controller) ListMailerSenders(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load mailer settings"})
 		return
 	}
-	senders, err := services.ListBrevoSenders(c.Request.Context(), settings)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
-		return
+	items := []gin.H{}
+	if strings.TrimSpace(settings.FromEmail) != "" {
+		items = append(items, gin.H{"id": 1, "name": settings.FromName, "email": settings.FromEmail, "active": true})
 	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Brevo senders loaded", Data: senders})
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "GoHighLevel sender loaded", Data: items})
 }
 
-func (h *Controller) CreateMailerSender(c *gin.Context) {
-	var req structs.BrevoSenderRequest
+func (h *Controller) SaveMailerSender(c *gin.Context) {
+	var req structs.MailerSenderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid sender payload"})
 		return
 	}
-	settings, err := services.LoadMailerSettings(c.Request.Context(), h.db)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load mailer settings"})
-		return
+	updates := map[string]string{"mailer_from_name": strings.TrimSpace(req.Name), "mailer_from_email": strings.ToLower(strings.TrimSpace(req.Email))}
+	for key, value := range updates {
+		setting := models.Setting{Key: key}
+		if err := h.db.WithContext(c.Request.Context()).Where(models.Setting{Key: key}).Assign(models.Setting{Value: value}).FirstOrCreate(&setting).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save sender"})
+			return
+		}
 	}
-	result, err := services.CreateBrevoSender(c.Request.Context(), settings, req.Name, req.Email)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
-		return
-	}
-	c.JSON(http.StatusCreated, structs.Response{Success: true, Message: "Brevo sender created", Data: result})
-}
-
-func (h *Controller) UpdateMailerSender(c *gin.Context) {
-	var req structs.BrevoSenderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid sender payload"})
-		return
-	}
-	settings, err := services.LoadMailerSettings(c.Request.Context(), h.db)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load mailer settings"})
-		return
-	}
-	if err := services.UpdateBrevoSender(c.Request.Context(), settings, c.Param("id"), req.Name, req.Email); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Brevo sender updated"})
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "GoHighLevel sender selection saved", Data: gin.H{"id": 1, "name": req.Name, "email": req.Email, "active": true}})
 }
 
 func (h *Controller) DeleteMailerSender(c *gin.Context) {
-	settings, err := services.LoadMailerSettings(c.Request.Context(), h.db)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load mailer settings"})
-		return
-	}
-	if err := services.DeleteBrevoSender(c.Request.Context(), settings, c.Param("id")); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Brevo sender deleted"})
+	c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Remove or verify sender identities in the GoHighLevel portal"})
 }
 
 func defaultSEOMetaRows() []models.SEOMeta {

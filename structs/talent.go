@@ -2,6 +2,28 @@ package structs
 
 import "time"
 
+type TalentReviewInvitationRequest struct {
+	ApplicationType string `json:"application_type"`
+	ApplicationID   uint   `json:"application_id"`
+}
+
+type TalentReviewSubmissionRequest struct {
+	Rating  int    `json:"rating"`
+	Content string `json:"content"`
+}
+
+type TalentReviewInvitationResponse struct {
+	ModelResponse
+	ApplicationType string     `json:"application_type"`
+	ApplicationID   uint       `json:"application_id"`
+	Name            string     `json:"name"`
+	Email           string     `json:"email"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	SentAt          *time.Time `json:"sent_at"`
+	UsedAt          *time.Time `json:"used_at"`
+	TestimonialID   uint       `json:"testimonial_id"`
+}
+
 type TalentJobRequest struct {
 	TitleEn       string `json:"title_en"`
 	TitleID       string `json:"title_id"`

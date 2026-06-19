@@ -24,3 +24,11 @@ type Event struct {
 	EndDate       time.Time `gorm:"not null;index" json:"end_date"`
 	IsActive      bool      `gorm:"not null;default:true;index" json:"is_active"`
 }
+
+type EventAttendance struct {
+	BaseModel
+	EventID    uint       `gorm:"not null;index;uniqueIndex:idx_event_attendance" json:"event_id"`
+	UserID     uint       `gorm:"not null;index;uniqueIndex:idx_event_attendance" json:"user_id"`
+	Status     string     `gorm:"size:30;not null;default:'attended';index" json:"status"`
+	AttendedAt *time.Time `gorm:"index" json:"attended_at"`
+}

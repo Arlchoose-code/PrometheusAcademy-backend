@@ -27,7 +27,7 @@ func (h *Controller) ListCourseCategories(c *gin.Context) {
 
 func (h *Controller) ListCourses(c *gin.Context) {
 	var courses []models.Course
-	query := h.db.WithContext(c.Request.Context()).Where("status <> ?", "draft")
+	query := h.db.WithContext(c.Request.Context()).Where("status IN ?", []string{"open", "closed"})
 	if search := strings.TrimSpace(c.Query("search")); search != "" {
 		like := "%" + search + "%"
 		query = query.Where("title_en LIKE ? OR title_id LIKE ? OR description_en LIKE ? OR description_id LIKE ?", like, like, like, like)
@@ -79,7 +79,7 @@ func (h *Controller) ListCourses(c *gin.Context) {
 
 func (h *Controller) GetCourse(c *gin.Context) {
 	var course models.Course
-	if err := h.db.WithContext(c.Request.Context()).Where("slug = ? AND status <> ?", c.Param("slug"), "draft").First(&course).Error; err != nil {
+	if err := h.db.WithContext(c.Request.Context()).Where("slug = ? AND status IN ?", c.Param("slug"), []string{"open", "closed"}).First(&course).Error; err != nil {
 		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Course not found"})
 		return
 	}
@@ -104,24 +104,26 @@ func BuildCourseSummaries(ctx context.Context, db *gorm.DB, courses []models.Cou
 			return nil, err
 		}
 		items = append(items, gin.H{
-			"id":                 course.ID,
-			"title_en":           course.TitleEn,
-			"title_id":           course.TitleID,
-			"slug":               course.Slug,
-			"description_en":     course.DescriptionEn,
-			"description_id":     course.DescriptionID,
-			"thumbnail":          course.Thumbnail,
-			"price":              course.Price,
-			"is_free":            course.IsFree || course.Price == 0,
-			"status":             course.Status,
-			"category":           category,
-			"instructor":         instructor,
-			"modules_count":      modulesCount,
-			"topics_count":       topicsCount,
-			"rating":             rating,
-			"reviews_count":      reviews,
-			"min_quiz_score":     course.MinQuizScore,
-			"quiz_attempt_limit": course.QuizAttemptLimit,
+			"id":                   course.ID,
+			"title_en":             course.TitleEn,
+			"title_id":             course.TitleID,
+			"slug":                 course.Slug,
+			"description_en":       course.DescriptionEn,
+			"description_id":       course.DescriptionID,
+			"learning_outcomes_en": course.LearningOutcomesEn,
+			"learning_outcomes_id": course.LearningOutcomesID,
+			"thumbnail":            course.Thumbnail,
+			"price":                course.Price,
+			"is_free":              course.IsFree || course.Price == 0,
+			"status":               course.Status,
+			"category":             category,
+			"instructor":           instructor,
+			"modules_count":        modulesCount,
+			"topics_count":         topicsCount,
+			"rating":               rating,
+			"reviews_count":        reviews,
+			"min_quiz_score":       course.MinQuizScore,
+			"quiz_attempt_limit":   course.QuizAttemptLimit,
 		})
 	}
 	return items, nil
@@ -135,6 +137,10 @@ func courseMeta(ctx context.Context, db *gorm.DB, course models.Course) (gin.H, 
 	var instructor models.User
 	if course.InstructorID != 0 {
 		_ = db.WithContext(ctx).First(&instructor, course.InstructorID).Error
+	}
+	var instructorProfile models.UserProfile
+	if instructor.ID != 0 {
+		_ = db.WithContext(ctx).Where("user_id = ?", instructor.ID).First(&instructorProfile).Error
 	}
 	var modulesCount, topicsCount, reviews int64
 	if err := db.WithContext(ctx).Model(&models.CourseModule{}).Where("course_id = ?", course.ID).Count(&modulesCount).Error; err != nil {
@@ -160,7 +166,16 @@ func courseMeta(ctx context.Context, db *gorm.DB, course models.Course) (gin.H, 
 	}
 	reviews = ratingRow.Count
 	return gin.H{"id": category.ID, "name_en": category.NameEn, "name_id": category.NameID, "slug": category.Slug},
-		gin.H{"id": instructor.ID, "name": instructor.Name, "avatar": instructor.Avatar},
+		gin.H{
+			"id":            instructor.ID,
+			"name":          instructor.Name,
+			"avatar":        instructor.Avatar,
+			"bio_en":        instructorProfile.BioEn,
+			"bio_id":        instructorProfile.BioID,
+			"linkedin_url":  instructorProfile.LinkedinURL,
+			"portfolio_url": instructorProfile.PortfolioURL,
+			"skills":        instructorProfile.Skills,
+		},
 		modulesCount, topicsCount, ratingRow.Average, reviews, nil
 }
 
@@ -271,7 +286,12 @@ func courseDetail(ctx context.Context, db *gorm.DB, course models.Course, userID
 		progress = (doneTopics * 100) / totalTopics
 	}
 	payload := summaries[0]
+	addOns, err := courseAddonPayloads(ctx, db, course.ID, true, state.Enrolled)
+	if err != nil {
+		return nil, err
+	}
 	payload["modules"] = moduleItems
+	payload["add_ons"] = addOns
 	payload["reviews"] = reviewItems
 	payload["reviews_page"] = reviewsPage
 	payload["reviews_per_page"] = reviewsPerPage
@@ -294,6 +314,53 @@ func courseDetail(ctx context.Context, db *gorm.DB, course models.Course, userID
 		}
 	}
 	return payload, nil
+}
+
+func CourseAddonPayloads(ctx context.Context, db *gorm.DB, courseID uint, activeOnly bool) ([]gin.H, error) {
+	return courseAddonPayloads(ctx, db, courseID, activeOnly, true)
+}
+
+func courseAddonPayloads(ctx context.Context, db *gorm.DB, courseID uint, activeOnly bool, includeDelivery bool) ([]gin.H, error) {
+	var rows []models.CourseAddon
+	query := db.WithContext(ctx).Where("course_id = ?", courseID)
+	if activeOnly {
+		query = query.Where("is_active = ?", true)
+	}
+	if err := query.Order("`order` asc, id asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		var category models.ProductCategory
+		if row.ProductCategoryID != 0 {
+			_ = db.WithContext(ctx).First(&category, row.ProductCategoryID).Error
+		}
+		filePath := ""
+		externalURL := ""
+		if includeDelivery {
+			filePath = row.FilePath
+			externalURL = row.ExternalURL
+		}
+		items = append(items, gin.H{
+			"id":                    row.ID,
+			"course_id":             row.CourseID,
+			"product_category_id":   row.ProductCategoryID,
+			"title_en":              row.TitleEn,
+			"title_id":              row.TitleID,
+			"description_en":        row.DescriptionEn,
+			"description_id":        row.DescriptionID,
+			"type":                  row.Type,
+			"file_path":             filePath,
+			"external_url":          externalURL,
+			"order":                 row.Order,
+			"is_active":             row.IsActive,
+			"category_slug":         category.Slug,
+			"category_name_en":      category.NameEn,
+			"category_name_id":      category.NameID,
+			"requires_booking_time": category.RequiresBookingTime,
+		})
+	}
+	return items, nil
 }
 
 type learningState struct {

@@ -33,6 +33,9 @@ func (h *Controller) CreateProductCategory(c *gin.Context) {
 		}
 		category.Slug = slug
 	}
+	if category.RequiresBookingTime {
+		category.ShowInKnowledgeBase = false
+	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&category).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create category"})
 		return
@@ -59,7 +62,10 @@ func (h *Controller) UpdateProductCategory(c *gin.Context) {
 		}
 		category.Slug = slug
 	}
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.ProductCategory{}).Where("id = ?", uint(id)).Select("name_en", "name_id", "slug", "requires_booking_time").Updates(category).Error; err != nil {
+	if category.RequiresBookingTime {
+		category.ShowInKnowledgeBase = false
+	}
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.ProductCategory{}).Where("id = ?", uint(id)).Select("name_en", "name_id", "slug", "requires_booking_time", "show_in_knowledge_base").Updates(category).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save category"})
 		return
 	}

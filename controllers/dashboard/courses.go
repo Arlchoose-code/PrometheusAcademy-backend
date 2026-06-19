@@ -75,9 +75,13 @@ func (h *Controller) CreateCourseEnrollment(c *gin.Context) {
 		return
 	}
 	enrollment := models.CourseEnrollment{UserID: user.ID, CourseID: course.ID, EnrolledAt: time.Now()}
-	if err := h.db.WithContext(c.Request.Context()).Where(models.CourseEnrollment{UserID: user.ID, CourseID: course.ID}).Attrs(enrollment).FirstOrCreate(&enrollment).Error; err != nil {
+	result := h.db.WithContext(c.Request.Context()).Where(models.CourseEnrollment{UserID: user.ID, CourseID: course.ID}).Attrs(enrollment).FirstOrCreate(&enrollment)
+	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to enroll"})
 		return
+	}
+	if result.RowsAffected > 0 {
+		_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventCourseEnrolled, "course", course.ID, services.XPCourseEnrolled, "Enrolled in a course", "Terdaftar di course")
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Enrolled", Data: enrollment})
 }
@@ -151,16 +155,27 @@ func (h *Controller) CompleteTopic(c *gin.Context) {
 		c.JSON(http.StatusForbidden, structs.Response{Success: false, Message: "Topic is locked"})
 		return
 	}
+	wasCompleted := false
+	var existingProgress models.TopicProgress
+	if err := h.db.WithContext(c.Request.Context()).Where("user_id = ? AND topic_id = ? AND completed_at IS NOT NULL", user.ID, uint(topicID)).First(&existingProgress).Error; err == nil {
+		wasCompleted = true
+	}
 	now := time.Now()
 	progress := models.TopicProgress{UserID: user.ID, TopicID: uint(topicID), CompletedAt: &now, VideoWatched: true}
 	if err := h.db.WithContext(c.Request.Context()).Where(models.TopicProgress{UserID: user.ID, TopicID: uint(topicID)}).Assign(progress).FirstOrCreate(&progress).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save progress"})
 		return
 	}
+	if !wasCompleted {
+		_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventLessonCompleted, "topic", uint(topicID), services.XPLessonCompleted, "Completed a lesson", "Menyelesaikan lesson")
+	}
 	certificate, completed, err := services.SyncCourseCompletion(c.Request.Context(), h.db, h.cfg, course, user.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to finalize progress"})
 		return
+	}
+	if completed {
+		_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventCourseCompleted, "course", course.ID, services.XPCourseCompleted, "Completed a course", "Menyelesaikan course")
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Topic completed", Data: gin.H{"progress": progress, "course_completed": completed, "certificate": certificate}})
 }
@@ -211,6 +226,9 @@ func (h *Controller) SubmitQuiz(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to finalize quiz"})
 		return
+	}
+	if completed {
+		_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventCourseCompleted, "course", course.ID, services.XPCourseCompleted, "Completed a course", "Menyelesaikan course")
 	}
 	result["course_completed"] = completed
 	result["certificate"] = certificate

@@ -1,9 +1,17 @@
 package admin
 
 import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"academyprometheus/backend/models"
 	"academyprometheus/backend/structs"
@@ -106,19 +114,189 @@ func (h *Controller) ListTestimonials(c *gin.Context) {
 }
 
 func (h *Controller) CreateTestimonial(c *gin.Context) {
-	createRow[models.Testimonial](h.db, "Testimonial created")(c)
+	var testimonial models.Testimonial
+	if err := c.ShouldBindJSON(&testimonial); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid testimonial payload"})
+		return
+	}
+	normalizeTestimonialReview(&testimonial)
+	if err := h.db.WithContext(c.Request.Context()).Create(&testimonial).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create testimonial"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Testimonial created", Data: testimonial})
 }
 
 func (h *Controller) UpdateTestimonial(c *gin.Context) {
-	updateRow[models.Testimonial](h.db, "Testimonial saved")(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid id"})
+		return
+	}
+	var testimonial models.Testimonial
+	if err := c.ShouldBindJSON(&testimonial); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid testimonial payload"})
+		return
+	}
+	normalizeTestimonialReview(&testimonial)
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("id = ?", uint(id)).Select("*").Omit("id", "created_at").Updates(testimonial).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save testimonial"})
+		return
+	}
+	testimonial.ID = uint(id)
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Testimonial saved", Data: testimonial})
 }
 
 func (h *Controller) DeleteTestimonial(c *gin.Context) {
 	deleteRow[models.Testimonial](h.db, "Testimonial deleted")(c)
 }
 
+func (h *Controller) SyncGoogleTestimonials(c *gin.Context) {
+	apiKey, placeID := h.googleReviewSettings(c.Request.Context())
+	if apiKey == "" || placeID == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Google Reviews API key and Place ID are required in admin settings"})
+		return
+	}
+	endpoint := "https://maps.googleapis.com/maps/api/place/details/json"
+	values := url.Values{}
+	values.Set("place_id", placeID)
+	values.Set("fields", "name,rating,reviews,url")
+	values.Set("key", apiKey)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, endpoint+"?"+values.Encode(), nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create Google request"})
+		return
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Failed to reach Google Places API"})
+		return
+	}
+	defer resp.Body.Close()
+	var payload googlePlaceDetailsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Invalid Google Places response"})
+		return
+	}
+	if payload.Status != "OK" {
+		message := payload.ErrorMessage
+		if message == "" {
+			message = fmt.Sprintf("Google Places returned %s", payload.Status)
+		}
+		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: message})
+		return
+	}
+	imported := 0
+	for _, review := range payload.Result.Reviews {
+		text := strings.TrimSpace(review.Text)
+		if text == "" {
+			continue
+		}
+		name := strings.TrimSpace(review.AuthorName)
+		if name == "" {
+			name = "Google reviewer"
+		}
+		externalID := googleReviewExternalID(placeID, review)
+		row := models.Testimonial{
+			Name:           name,
+			Role:           "Google Review",
+			Company:        payload.Result.Name,
+			Avatar:         review.ProfilePhotoURL,
+			ContentEn:      text,
+			ContentID:      text,
+			Rating:         review.Rating,
+			ReviewSource:   "google",
+			DisplayContext: "talent_bridge",
+			ReviewStatus:   "approved",
+			ExternalID:     externalID,
+			SourceURL:      review.AuthorURL,
+			IsActive:       true,
+		}
+		if row.Rating < 1 {
+			row.Rating = 5
+		}
+		if err := h.db.WithContext(c.Request.Context()).Where(models.Testimonial{ReviewSource: "google", ExternalID: externalID}).Assign(row).FirstOrCreate(&row).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save Google review"})
+			return
+		}
+		imported++
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Google reviews synced", Data: gin.H{"imported": imported}})
+}
+
 func (h *Controller) UpdateTestimonialAvatar(c *gin.Context) {
 	h.updateUploadField(c, h.uploadService.SaveTestimonialAvatar, &models.Testimonial{}, "avatar", "Avatar uploaded")
+}
+
+type googlePlaceDetailsResponse struct {
+	Status       string `json:"status"`
+	ErrorMessage string `json:"error_message"`
+	Result       struct {
+		Name    string              `json:"name"`
+		URL     string              `json:"url"`
+		Reviews []googlePlaceReview `json:"reviews"`
+	} `json:"result"`
+}
+
+type googlePlaceReview struct {
+	AuthorName      string `json:"author_name"`
+	AuthorURL       string `json:"author_url"`
+	ProfilePhotoURL string `json:"profile_photo_url"`
+	Rating          int    `json:"rating"`
+	Text            string `json:"text"`
+	Time            int64  `json:"time"`
+}
+
+func (h *Controller) googleReviewSettings(ctx context.Context) (string, string) {
+	values := map[string]string{}
+	var rows []models.Setting
+	_ = h.db.WithContext(ctx).Where("`key` IN ?", []string{"google_reviews_api_key", "google_reviews_place_id"}).Find(&rows).Error
+	for _, row := range rows {
+		values[row.Key] = strings.TrimSpace(row.Value)
+	}
+	apiKey := values["google_reviews_api_key"]
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("GOOGLE_REVIEWS_API_KEY"))
+	}
+	placeID := values["google_reviews_place_id"]
+	if placeID == "" {
+		placeID = strings.TrimSpace(os.Getenv("GOOGLE_REVIEWS_PLACE_ID"))
+	}
+	return apiKey, placeID
+}
+
+func googleReviewExternalID(placeID string, review googlePlaceReview) string {
+	hash := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%s", placeID, review.AuthorName, review.Time, review.Text)))
+	return hex.EncodeToString(hash[:])
+}
+
+func normalizeTestimonialReview(testimonial *models.Testimonial) {
+	testimonial.ReviewSource = strings.TrimSpace(testimonial.ReviewSource)
+	if testimonial.ReviewSource == "" {
+		testimonial.ReviewSource = "student"
+	}
+	testimonial.DisplayContext = strings.TrimSpace(testimonial.DisplayContext)
+	if testimonial.DisplayContext == "" {
+		testimonial.DisplayContext = "general"
+	}
+	testimonial.ReviewStatus = strings.TrimSpace(testimonial.ReviewStatus)
+	if testimonial.ReviewStatus == "" {
+		testimonial.ReviewStatus = "approved"
+	}
+	if testimonial.Rating < 1 {
+		testimonial.Rating = 1
+	}
+	if testimonial.Rating > 5 {
+		testimonial.Rating = 5
+	}
+	testimonial.IsActive = testimonial.ReviewStatus == "approved" && testimonial.IsActive
+	if testimonial.ReviewStatus == "approved" && !testimonial.IsActive {
+		testimonial.IsActive = true
+	}
+	if testimonial.ReviewStatus != "approved" {
+		testimonial.IsActive = false
+	}
 }
 
 func (h *Controller) ListBanners(c *gin.Context) {

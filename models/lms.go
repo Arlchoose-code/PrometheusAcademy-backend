@@ -11,19 +11,36 @@ type CourseCategory struct {
 
 type Course struct {
 	BaseModel
-	TitleEn          string `gorm:"size:191;not null" json:"title_en"`
-	TitleID          string `gorm:"size:191;not null" json:"title_id"`
-	Slug             string `gorm:"size:191;not null;uniqueIndex" json:"slug"`
-	DescriptionEn    string `gorm:"type:longtext" json:"description_en"`
-	DescriptionID    string `gorm:"type:longtext" json:"description_id"`
-	Thumbnail        string `gorm:"size:255" json:"thumbnail"`
-	Price            int    `gorm:"not null;default:0" json:"price"`
-	Status           string `gorm:"size:20;not null;default:'draft';index" json:"status"`
-	IsFree           bool   `gorm:"not null;default:false" json:"is_free"`
-	InstructorID     uint   `gorm:"index" json:"instructor_id"`
-	CategoryID       uint   `gorm:"index" json:"category_id"`
-	MinQuizScore     int    `gorm:"not null;default:70" json:"min_quiz_score"`
-	QuizAttemptLimit int    `gorm:"not null;default:3" json:"quiz_attempt_limit"`
+	TitleEn            string `gorm:"size:191;not null" json:"title_en"`
+	TitleID            string `gorm:"size:191;not null" json:"title_id"`
+	Slug               string `gorm:"size:191;not null;uniqueIndex" json:"slug"`
+	DescriptionEn      string `gorm:"type:longtext" json:"description_en"`
+	DescriptionID      string `gorm:"type:longtext" json:"description_id"`
+	LearningOutcomesEn string `gorm:"type:text" json:"learning_outcomes_en"`
+	LearningOutcomesID string `gorm:"type:text" json:"learning_outcomes_id"`
+	Thumbnail          string `gorm:"size:255" json:"thumbnail"`
+	Price              int    `gorm:"not null;default:0" json:"price"`
+	Status             string `gorm:"size:20;not null;default:'draft';index" json:"status"`
+	IsFree             bool   `gorm:"not null;default:false" json:"is_free"`
+	InstructorID       uint   `gorm:"index" json:"instructor_id"`
+	CategoryID         uint   `gorm:"index" json:"category_id"`
+	MinQuizScore       int    `gorm:"not null;default:70" json:"min_quiz_score"`
+	QuizAttemptLimit   int    `gorm:"not null;default:3" json:"quiz_attempt_limit"`
+}
+
+type CourseAddon struct {
+	BaseModel
+	CourseID          uint   `gorm:"not null;index" json:"course_id"`
+	ProductCategoryID uint   `gorm:"index" json:"product_category_id"`
+	TitleEn           string `gorm:"size:191;not null" json:"title_en"`
+	TitleID           string `gorm:"size:191;not null" json:"title_id"`
+	DescriptionEn     string `gorm:"type:text" json:"description_en"`
+	DescriptionID     string `gorm:"type:text" json:"description_id"`
+	Type              string `gorm:"size:40;not null;default:'resource';index" json:"type"`
+	FilePath          string `gorm:"size:500" json:"file_path"`
+	ExternalURL       string `gorm:"size:500" json:"external_url"`
+	Order             int    `gorm:"not null;default:0;index" json:"order"`
+	IsActive          bool   `gorm:"not null;default:true;index" json:"is_active"`
 }
 
 type CourseModule struct {

@@ -258,7 +258,7 @@ func ProcessNextQueuedEmailCampaign(ctx context.Context, db *gorm.DB) error {
 		if hasTemplate {
 			html = RenderCampaignTemplateHTML(template, recipient.Language, subject, body, settings)
 		}
-		_, err := SendBrevoEmail(ctx, settings, MailMessage{
+		_, err := SendMailerEmail(ctx, settings, MailMessage{
 			ToEmail: recipient.Email,
 			ToName:  recipient.Name,
 			Subject: RenderMailerRecipientVariables(subject, recipient),

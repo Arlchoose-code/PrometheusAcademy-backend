@@ -143,6 +143,7 @@ func (h *Controller) DownloadProductFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "File not found"})
 		return
 	}
+	_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventMaterialDownloaded, "product_file", file.ID, services.XPMaterialDownloaded, "Downloaded a learning material", "Download materi belajar")
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.FileName))
 	c.File(services.StorageFilePath(h.cfg, file.FilePath))

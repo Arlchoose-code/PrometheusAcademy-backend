@@ -19,6 +19,7 @@ type DashboardData struct {
 	Courses      []DashboardCourse      `json:"courses"`
 	Certificates []DashboardCertificate `json:"certificates"`
 	Transactions []DashboardTransaction `json:"transactions"`
+	Gamification GamificationSummary    `json:"gamification"`
 }
 
 type DashboardStats struct {
@@ -99,8 +100,12 @@ func (s *DashboardService) GetStudentDashboard(ctx context.Context, userID uint)
 	if err != nil {
 		return DashboardData{}, err
 	}
+	gamification, err := GamificationForUser(ctx, s.db, userID)
+	if err != nil {
+		return DashboardData{}, err
+	}
 
-	return DashboardData{Stats: stats, Courses: courses, Certificates: certificates, Transactions: transactions}, nil
+	return DashboardData{Stats: stats, Courses: courses, Certificates: certificates, Transactions: transactions, Gamification: gamification}, nil
 }
 
 func (s *DashboardService) dashboardCourses(ctx context.Context, userID uint) ([]DashboardCourse, error) {
@@ -212,7 +217,7 @@ func (s *DashboardService) dashboardTransactions(ctx context.Context, userID uin
 			oi.item_id,
 			oi.item_type,
 			COALESCE(p.type, '') AS product_type,
-			COALESCE(pc.requires_booking_time, false) AS requires_booking_time,
+			(COALESCE(pc.requires_booking_time, false) OR COALESCE(course_booking.requires_booking_time, false)) AS requires_booking_time,
 			COALESCE(c.title_en, p.title_en, o.midtrans_order_id) AS item,
 			oi.price AS amount,
 			o.status,
@@ -222,6 +227,13 @@ func (s *DashboardService) dashboardTransactions(ctx context.Context, userID uin
 		LEFT JOIN courses c ON oi.item_type = 'course' AND c.id = oi.item_id
 		LEFT JOIN products p ON oi.item_type = 'product' AND p.id = oi.item_id
 		LEFT JOIN product_categories pc ON pc.id = p.category_id
+		LEFT JOIN (
+			SELECT ca.course_id, MAX(CASE WHEN addon_categories.requires_booking_time THEN 1 ELSE 0 END) AS requires_booking_time
+			FROM course_addons ca
+			JOIN product_categories addon_categories ON addon_categories.id = ca.product_category_id
+			WHERE ca.is_active = true
+			GROUP BY ca.course_id
+		) course_booking ON course_booking.course_id = c.id
 		WHERE o.user_id = ?
 		ORDER BY o.created_at DESC
 		LIMIT 6

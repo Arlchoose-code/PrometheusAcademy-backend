@@ -31,6 +31,9 @@ func Seed(db *gorm.DB) error {
 	if err := seedSettings(ctx, db); err != nil {
 		return err
 	}
+	if err := services.SeedGamificationAchievements(ctx, db); err != nil {
+		return err
+	}
 	if err := seedCourses(ctx, db, admin.ID); err != nil {
 		return err
 	}
@@ -72,6 +75,7 @@ func seedUsers(ctx context.Context, db *gorm.DB) (models.User, models.User, erro
 		Phone:           "+62 812 0000 0000",
 		IsStudent:       false,
 		IsAdmin:         true,
+		IsInstructor:    true,
 		Language:        "en",
 		EmailVerifiedAt: &verifiedAt,
 	}
@@ -89,23 +93,31 @@ func seedUsers(ctx context.Context, db *gorm.DB) (models.User, models.User, erro
 
 func seedSettings(ctx context.Context, db *gorm.DB) error {
 	settings := map[string]string{
-		"site_name":                       "Prometheus Academy",
-		"copyright_text":                  "Academy Prometheus 2026. All rights reserved",
-		"phone":                           "+62 000 0000 0000",
-		"email":                           "hello@academyprometheus.com",
-		"facebook_url":                    "https://facebook.com",
-		"instagram_url":                   "https://instagram.com",
-		"tiktok_url":                      "https://tiktok.com",
-		"home_students_stat":              "10K+",
-		"home_courses_stat":               "4",
-		"home_regions_stat":               "2",
-		"home_support_stat":               "7/24",
-		"mailer_provider":                 "brevo",
-		"mailer_from_email":               "hello@academyprometheus.com",
-		"mailer_from_name":                "Prometheus Academy",
-		"mailer_reply_to":                 "hello@academyprometheus.com",
-		"brevo_api_key":                   "",
-		"mailer_campaign_rate_per_minute": "30",
+		"site_name":                         "Prometheus Academy",
+		"copyright_text":                    "Academy Prometheus 2026. All rights reserved",
+		"phone":                             "+62 000 0000 0000",
+		"email":                             "hello@academyprometheus.com",
+		"facebook_url":                      "https://facebook.com",
+		"instagram_url":                     "https://instagram.com",
+		"tiktok_url":                        "https://tiktok.com",
+		"home_students_stat":                "10K+",
+		"home_courses_stat":                 "4",
+		"home_regions_stat":                 "2",
+		"home_support_stat":                 "7/24",
+		"monthly_enrollment_limit":          "100",
+		"monthly_enrollment_banner_enabled": "true",
+		"mailer_provider":                   "gohighlevel",
+		"mailer_from_email":                 "hello@academyprometheus.com",
+		"mailer_from_name":                  "Prometheus Academy",
+		"mailer_reply_to":                   "hello@academyprometheus.com",
+		"ghl_access_token":                  "",
+		"ghl_location_id":                   "",
+		"ghl_api_base_url":                  "https://services.leadconnectorhq.com",
+		"ghl_newsletter_tag":                "prometheus-newsletter",
+		"ghl_contact_lead_tag":              "prometheus-website-lead",
+		"google_reviews_api_key":            "",
+		"google_reviews_place_id":           "",
+		"mailer_campaign_rate_per_minute":   "30",
 	}
 	for key, value := range services.TransactionalTemplateDefaults() {
 		settings[key] = value
@@ -116,6 +128,14 @@ func seedSettings(ctx context.Context, db *gorm.DB) error {
 		if err := db.WithContext(ctx).Where(models.Setting{Key: key}).Attrs(setting).FirstOrCreate(&setting).Error; err != nil {
 			return fmt.Errorf("seed setting %s: %w", key, err)
 		}
+	}
+	if err := db.WithContext(ctx).Model(&models.Setting{}).
+		Where("`key` = ? AND LOWER(value) <> ?", "mailer_provider", "gohighlevel").
+		Update("value", "gohighlevel").Error; err != nil {
+		return fmt.Errorf("migrate mailer provider: %w", err)
+	}
+	if err := db.WithContext(ctx).Where("`key` = ?", "brevo_api_key").Delete(&models.Setting{}).Error; err != nil {
+		return fmt.Errorf("remove legacy mailer credential: %w", err)
 	}
 	if err := db.WithContext(ctx).Model(&models.Setting{}).
 		Where("`key` = ? AND value = ?", services.EmailTemplateLogin, "login_notification").
@@ -194,9 +214,10 @@ func seedCourses(ctx context.Context, db *gorm.DB, instructorID uint) error {
 
 func seedCommerce(ctx context.Context, db *gorm.DB, userID uint) error {
 	categories := []models.ProductCategory{
-		{NameEn: "E-Book", NameID: "E-Book", Slug: "ebook"},
+		{NameEn: "E-books", NameID: "E-book", Slug: "ebook", ShowInKnowledgeBase: true},
 		{NameEn: "Consultation", NameID: "Konsultasi", Slug: "consultation", RequiresBookingTime: true},
-		{NameEn: "Blueprint", NameID: "Blueprint", Slug: "blueprint"},
+		{NameEn: "Guides", NameID: "Panduan", Slug: "blueprint", ShowInKnowledgeBase: true},
+		{NameEn: "Learning Resources", NameID: "Resource Belajar", Slug: "learning-resources", ShowInKnowledgeBase: true},
 	}
 	categoryIDs := map[string]uint{}
 	for _, item := range categories {
@@ -204,7 +225,12 @@ func seedCommerce(ctx context.Context, db *gorm.DB, userID uint) error {
 		if err := db.WithContext(ctx).Where(models.ProductCategory{Slug: category.Slug}).Attrs(category).FirstOrCreate(&category).Error; err != nil {
 			return fmt.Errorf("seed product category %s: %w", item.Slug, err)
 		}
-		if err := db.WithContext(ctx).Model(&category).Update("requires_booking_time", item.RequiresBookingTime).Error; err != nil {
+		if err := db.WithContext(ctx).Model(&category).Updates(map[string]any{
+			"name_en":                item.NameEn,
+			"name_id":                item.NameID,
+			"requires_booking_time":  item.RequiresBookingTime,
+			"show_in_knowledge_base": item.ShowInKnowledgeBase && !item.RequiresBookingTime,
+		}).Error; err != nil {
 			return fmt.Errorf("seed product category booking flag %s: %w", item.Slug, err)
 		}
 		categoryIDs[item.Slug] = category.ID
@@ -231,6 +257,12 @@ func seedCommerce(ctx context.Context, db *gorm.DB, userID uint) error {
 			DescriptionEn: "A complete structure for essays, timeline, recommendation letters, and interview prep.",
 			DescriptionID: "Struktur lengkap untuk esai, timeline, surat rekomendasi, dan persiapan interview.",
 			Thumbnail:     "/uploads/products/scholarship-application-blueprint.webp", Price: 249000, Type: "blueprint", CategoryID: categoryIDs["blueprint"], IsPublished: true,
+		},
+		{
+			TitleEn: "Study Abroad Resource Kit", TitleID: "Resource Kit Studi Luar Negeri", Slug: "study-abroad-resource-kit",
+			DescriptionEn: "Checklists, planning sheets, and practical references for preparing an international study plan.",
+			DescriptionID: "Checklist, lembar rencana, dan referensi praktis untuk menyiapkan rencana studi internasional.",
+			Thumbnail:     "/uploads/products/study-abroad-resource-kit.webp", Price: 99000, Type: "learning-resources", CategoryID: categoryIDs["learning-resources"], IsPublished: true,
 		},
 	}
 
@@ -326,13 +358,14 @@ func seedCMS(ctx context.Context, db *gorm.DB) error {
 	}
 
 	testimonials := []models.Testimonial{
-		{Name: "Nadia Putri", Role: "Scholarship Applicant", Company: "Indonesia", ContentEn: "The roadmap made my IELTS preparation and scholarship documents feel structured.", ContentID: "Roadmap-nya bikin persiapan IELTS dan dokumen beasiswa jadi jauh lebih terarah.", Rating: 5, IsActive: true},
-		{Name: "Marta Schneider", Role: "Talent Partner", Company: "Berlin SaaS Studio", ContentEn: "Talent Bridge helped us understand Asia-based hiring without adding operational noise.", ContentID: "Talent Bridge membantu kami memahami hiring talenta Asia tanpa menambah beban operasional.", Rating: 5, IsActive: true},
-		{Name: "Raka Wibowo", Role: "UI/UX Learner", Company: "Jakarta", ContentEn: "The course pushed me to finish a portfolio case study that recruiters could actually read.", ContentID: "Kursusnya mendorong saya menyelesaikan studi kasus portofolio yang benar-benar bisa dibaca recruiter.", Rating: 5, IsActive: true},
+		{Name: "Nadia Putri", Role: "Scholarship Applicant", Company: "Indonesia", ContentEn: "The roadmap made my IELTS preparation and scholarship documents feel structured.", ContentID: "Roadmap-nya bikin persiapan IELTS dan dokumen beasiswa jadi jauh lebih terarah.", Rating: 5, ReviewSource: "student", DisplayContext: "all", ReviewStatus: "approved", IsActive: true},
+		{Name: "Marta Schneider", Role: "Talent Partner", Company: "Berlin SaaS Studio", ContentEn: "Talent Bridge helped us understand Asia-based hiring without adding operational noise.", ContentID: "Talent Bridge membantu kami memahami hiring talenta Asia tanpa menambah beban operasional.", Rating: 5, ReviewSource: "google", DisplayContext: "talent_bridge", ReviewStatus: "approved", IsActive: true},
+		{Name: "Raka Wibowo", Role: "UI/UX Learner", Company: "Jakarta", ContentEn: "The course pushed me to finish a portfolio case study that recruiters could actually read.", ContentID: "Kursusnya mendorong saya menyelesaikan studi kasus portofolio yang benar-benar bisa dibaca recruiter.", Rating: 5, ReviewSource: "student", DisplayContext: "all", ReviewStatus: "approved", IsActive: true},
+		{Name: "Elena Kovacs", Role: "People Operations", Company: "Budapest Growth Lab", ContentEn: "The Talent Bridge process gave us a clearer view of Asia-based remote candidates and the support needed to onboard them.", ContentID: "Proses Talent Bridge memberi gambaran lebih jelas tentang kandidat remote berbasis Asia dan dukungan yang dibutuhkan untuk onboarding.", Rating: 5, ReviewSource: "google", DisplayContext: "talent_bridge", ReviewStatus: "approved", IsActive: true},
 	}
 	for _, item := range testimonials {
 		testimonial := item
-		if err := db.WithContext(ctx).Where(models.Testimonial{Name: testimonial.Name}).Attrs(testimonial).FirstOrCreate(&testimonial).Error; err != nil {
+		if err := db.WithContext(ctx).Where(models.Testimonial{Name: testimonial.Name}).Assign(testimonial).FirstOrCreate(&testimonial).Error; err != nil {
 			return fmt.Errorf("seed testimonial %s: %w", item.Name, err)
 		}
 	}
@@ -370,6 +403,7 @@ func seedCMS(ctx context.Context, db *gorm.DB) error {
 		{DesignID: defaultEmailDesign.ID, Key: "deposit_confirmation", SubjectEn: "Deposit confirmed", SubjectID: "Deposit terkonfirmasi", PreheaderEn: "Your deposit has been received.", PreheaderID: "Deposit kamu sudah diterima.", BodyEn: seedEmailTemplateHTML("Deposit confirmed", `<p>Hi {name},</p><p>Your deposit of <strong>{amount}</strong> has been received.</p><p>Reference: <strong>{transaction_id}</strong></p>`, "You can check the transaction from your dashboard."), BodyID: seedEmailTemplateHTML("Deposit terkonfirmasi", `<p>Hi {name},</p><p>Deposit sebesar <strong>{amount}</strong> sudah diterima.</p><p>Referensi: <strong>{transaction_id}</strong></p>`, "Kamu bisa cek transaksi dari dashboard."), FooterEn: "<p>You can check the transaction from your dashboard.</p>", FooterID: "<p>Kamu bisa cek transaksi dari dashboard.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
 		{DesignID: defaultEmailDesign.ID, Key: "certificate", SubjectEn: "Your certificate is ready", SubjectID: "Sertifikat kamu sudah siap", PreheaderEn: "Congratulations on completing {course}.", PreheaderID: "Selamat menyelesaikan {course}.", BodyEn: seedEmailTemplateHTML("Your certificate is ready", `<p>Congratulations {name},</p><p>Your certificate for <strong>{course}</strong> is ready.</p><p><a href="{certificate_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Download Certificate</a></p>`, "Share your certificate with your network."), BodyID: seedEmailTemplateHTML("Sertifikat kamu sudah siap", `<p>Selamat {name},</p><p>Sertifikat untuk <strong>{course}</strong> sudah siap.</p><p><a href="{certificate_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Download Sertifikat</a></p>`, "Bagikan sertifikat kamu ke network kamu."), FooterEn: "<p>Share your certificate with your network.</p>", FooterID: "<p>Bagikan sertifikat kamu ke network kamu.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
 		{DesignID: defaultEmailDesign.ID, Key: "booking_confirmation", SubjectEn: "Booking confirmed", SubjectID: "Booking terkonfirmasi", PreheaderEn: "Your consultation schedule is confirmed.", PreheaderID: "Jadwal konsultasi kamu sudah terkonfirmasi.", BodyEn: seedEmailTemplateHTML("Booking confirmed", `<p>Your booking is confirmed, {name}.</p><p>Schedule: <strong>{booking_time}</strong></p><p>Consultation: <strong>{service}</strong></p>`, "Need help? Reply to this email."), BodyID: seedEmailTemplateHTML("Booking terkonfirmasi", `<p>Booking kamu terkonfirmasi, {name}.</p><p>Jadwal: <strong>{booking_time}</strong></p><p>Konsultasi: <strong>{service}</strong></p>`, "Butuh bantuan? Balas email ini."), FooterEn: "<p>Need help? Reply to this email.</p>", FooterID: "<p>Butuh bantuan? Balas email ini.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
+		{DesignID: defaultEmailDesign.ID, Key: "talent_review_invitation", SubjectEn: "Share your Talent Bridge experience", SubjectID: "Bagikan pengalaman Talent Bridge kamu", PreheaderEn: "Your private review invitation is ready.", PreheaderID: "Undangan review privat kamu sudah siap.", BodyEn: seedEmailTemplateHTML("Share your Talent Bridge experience", `<p>Hi {name},</p><p>Thank you for being part of Talent Bridge. Use your private one-time link to share your experience.</p><p><a href="{review_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Write a Review</a></p><p>This invitation expires on <strong>{expires_at}</strong>.</p>`, "Your review will be moderated before it appears publicly."), BodyID: seedEmailTemplateHTML("Bagikan pengalaman Talent Bridge kamu", `<p>Hai {name},</p><p>Terima kasih sudah menjadi bagian dari Talent Bridge. Gunakan link privat sekali pakai untuk membagikan pengalaman kamu.</p><p><a href="{review_url}" style="display:inline-block;background:#C9A84C;color:#0D1B2E;text-decoration:none;border-radius:10px;padding:12px 18px;font-weight:800;">Tulis Review</a></p><p>Undangan ini berlaku sampai <strong>{expires_at}</strong>.</p>`, "Review kamu akan dimoderasi sebelum tampil di publik."), FooterEn: "<p>Your review will be moderated before it appears publicly.</p>", FooterID: "<p>Review kamu akan dimoderasi sebelum tampil di publik.</p>", BackgroundColor: "#F8F9FA", AccentColor: "#C9A84C"},
 	}
 	for _, item := range templates {
 		template := item
@@ -439,13 +473,23 @@ func seedTalentAndPartners(ctx context.Context, db *gorm.DB) error {
 	}
 
 	partners := []models.Partner{
-		{Name: "Jakarta Tech Institute", Country: "Indonesia", Logo: "/uploads/partners/jakarta-tech-institute.webp", Website: "https://example.com", DescriptionEn: "University partner for digital skills and global employability programs.", DescriptionID: "Partner universitas untuk digital skills dan program employability global.", IsActive: true},
-		{Name: "Budapest Global University", Country: "Hungary", Logo: "/uploads/partners/budapest-global-university.webp", Website: "https://example.com", DescriptionEn: "European partner for academic exchange and talent development.", DescriptionID: "Partner Eropa untuk pertukaran akademik dan pengembangan talenta.", IsActive: true},
-		{Name: "Berlin SaaS Studio", Country: "Germany", Logo: "/uploads/partners/berlin-saas-studio.webp", Website: "https://example.com", DescriptionEn: "Hiring partner for remote product and growth roles.", DescriptionID: "Partner hiring untuk role remote product dan growth.", IsActive: true},
+		{PartnerType: "university", Name: "Jakarta Tech Institute", Country: "Indonesia", Logo: "/uploads/partners/jakarta-tech-institute.webp", Website: "https://example.com", ContactInfo: "international-office@jti.example", DescriptionEn: "University partner for digital skills and global employability programs.", DescriptionID: "Partner universitas untuk digital skills dan program employability global.", Status: "active", Notes: "Seed partner for homepage university showcase.", IsActive: true},
+		{PartnerType: "university", Name: "Budapest Global University", Country: "Hungary", Logo: "/uploads/partners/budapest-global-university.webp", Website: "https://example.com", ContactInfo: "partnerships@bgu.example", DescriptionEn: "European partner for academic exchange and talent development.", DescriptionID: "Partner Eropa untuk pertukaran akademik dan pengembangan talenta.", Status: "active", Notes: "Seed partner for homepage university showcase.", IsActive: true},
+		{PartnerType: "company", Name: "Berlin SaaS Studio", Country: "Germany", Logo: "/uploads/partners/berlin-saas-studio.webp", Website: "https://example.com", ContactInfo: "talent@berlinsaas.example", DescriptionEn: "Hiring partner for remote product and growth roles.", DescriptionID: "Partner hiring untuk role remote product dan growth.", Status: "active", Notes: "Seed partner for trusted companies showcase.", IsActive: true},
 	}
 	for _, item := range partners {
 		partner := item
-		if err := db.WithContext(ctx).Where(models.Partner{Name: partner.Name}).Attrs(partner).FirstOrCreate(&partner).Error; err != nil {
+		if partner.Status == "" {
+			partner.Status = "active"
+		}
+		if partner.PartnerType == "" {
+			partner.PartnerType = "university"
+		}
+		if err := db.WithContext(ctx).Where(models.Partner{Name: partner.Name}).Assign(map[string]any{
+			"partner_type": partner.PartnerType,
+			"status":       partner.Status,
+			"is_active":    partner.IsActive,
+		}).Attrs(partner).FirstOrCreate(&partner).Error; err != nil {
 			return fmt.Errorf("seed partner %s: %w", item.Name, err)
 		}
 	}

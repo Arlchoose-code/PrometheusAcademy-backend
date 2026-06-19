@@ -13,16 +13,18 @@ import (
 )
 
 type Controller struct {
-	db               *gorm.DB
-	cfg              config.Config
-	dashboardService *services.DashboardService
+	db                   *gorm.DB
+	cfg                  config.Config
+	dashboardService     *services.DashboardService
+	communicationService *services.CommunicationService
 }
 
 func NewController(db *gorm.DB, cfg config.Config) *Controller {
 	return &Controller{
-		db:               db,
-		cfg:              cfg,
-		dashboardService: services.NewDashboardService(db),
+		db:                   db,
+		cfg:                  cfg,
+		dashboardService:     services.NewDashboardService(db),
+		communicationService: services.NewCommunicationService(db),
 	}
 }
 

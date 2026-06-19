@@ -94,14 +94,20 @@ type FAQResponse struct {
 }
 
 type TestimonialRequest struct {
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	Company   string `json:"company"`
-	Avatar    string `json:"avatar"`
-	ContentEn string `json:"content_en"`
-	ContentID string `json:"content_id"`
-	Rating    int    `json:"rating"`
-	IsActive  bool   `json:"is_active"`
+	Name           string `json:"name"`
+	Role           string `json:"role"`
+	Company        string `json:"company"`
+	Avatar         string `json:"avatar"`
+	ContentEn      string `json:"content_en"`
+	ContentID      string `json:"content_id"`
+	Rating         int    `json:"rating"`
+	ReviewSource   string `json:"review_source"`
+	DisplayContext string `json:"display_context"`
+	ReviewStatus   string `json:"review_status"`
+	ExternalID     string `json:"external_id"`
+	SourceURL      string `json:"source_url"`
+	UserID         uint   `json:"user_id"`
+	IsActive       bool   `json:"is_active"`
 }
 
 type TestimonialResponse struct {
@@ -179,7 +185,7 @@ type MailerTestRequest struct {
 	Text    string `json:"text"`
 }
 
-type BrevoSenderRequest struct {
+type MailerSenderRequest struct {
 	Name  string `json:"name" binding:"required"`
 	Email string `json:"email" binding:"required,email"`
 }

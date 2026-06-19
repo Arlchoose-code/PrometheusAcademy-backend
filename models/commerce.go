@@ -27,6 +27,7 @@ type ProductCategory struct {
 	NameID              string `gorm:"size:191;not null" json:"name_id"`
 	Slug                string `gorm:"size:191;not null;uniqueIndex" json:"slug"`
 	RequiresBookingTime bool   `gorm:"not null;default:false;index" json:"requires_booking_time"`
+	ShowInKnowledgeBase bool   `gorm:"not null;default:false;index" json:"show_in_knowledge_base"`
 }
 
 type ProductFile struct {
@@ -95,9 +96,11 @@ type Invoice struct {
 
 type ConsultationSlot struct {
 	BaseModel
+	OwnerID     uint      `gorm:"not null;default:0;index" json:"owner_id"`
 	Date        time.Time `gorm:"type:date;not null;index" json:"date"`
 	TimeStart   string    `gorm:"size:10;not null" json:"time_start"`
 	TimeEnd     string    `gorm:"size:10;not null" json:"time_end"`
+	Capacity    int       `gorm:"not null;default:1" json:"capacity"`
 	IsAvailable bool      `gorm:"not null;default:true;index" json:"is_available"`
 }
 

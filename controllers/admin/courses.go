@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"context"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"strconv"
@@ -99,6 +101,12 @@ func (h *Controller) GetCourse(c *gin.Context) {
 	var drips []models.DripSchedule
 	_ = h.db.WithContext(c.Request.Context()).Where("course_id = ?", course.ID).Order("id asc").Find(&drips).Error
 	detail["drip_schedules"] = drips
+	addOns, err := publiccontroller.CourseAddonPayloads(c.Request.Context(), h.db, course.ID, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load course add-ons"})
+		return
+	}
+	detail["add_ons"] = addOns
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Course loaded", Data: detail})
 }
 
@@ -116,6 +124,85 @@ func (h *Controller) DeleteCourse(c *gin.Context) {
 
 func (h *Controller) UpdateCourseThumbnail(c *gin.Context) {
 	h.updateUploadField(c, h.uploadService.SaveCourseThumbnail, &models.Course{}, "thumbnail", "Course thumbnail uploaded")
+}
+
+func (h *Controller) CreateCourseAddon(c *gin.Context) {
+	course, ok := h.loadCourseByID(c)
+	if !ok {
+		return
+	}
+	var req models.CourseAddon
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid add-on payload"})
+		return
+	}
+	req.ID = 0
+	req.CourseID = course.ID
+	if err := h.normalizeCourseAddon(c.Request.Context(), &req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Create(&req).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create add-on"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Add-on created", Data: req})
+}
+
+func (h *Controller) UpdateCourseAddon(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid add-on id"})
+		return
+	}
+	var current models.CourseAddon
+	if err := h.db.WithContext(c.Request.Context()).First(&current, uint(id)).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Add-on not found"})
+		return
+	}
+	var req models.CourseAddon
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid add-on payload"})
+		return
+	}
+	req.ID = current.ID
+	req.CourseID = current.CourseID
+	if err := h.normalizeCourseAddon(c.Request.Context(), &req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.CourseAddon{}).Where("id = ?", current.ID).Select("product_category_id", "title_en", "title_id", "description_en", "description_id", "type", "file_path", "external_url", "order", "is_active").Updates(req).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save add-on"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Add-on saved", Data: req})
+}
+
+func (h *Controller) DeleteCourseAddon(c *gin.Context) {
+	deleteRow[models.CourseAddon](h.db, "Add-on deleted")(c)
+}
+
+func (h *Controller) UpdateCourseAddonFile(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid add-on id"})
+		return
+	}
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "File is required"})
+		return
+	}
+	path, originalName, err := h.uploadService.SaveCourseAddonFile(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.CourseAddon{}).Where("id = ?", uint(id)).Update("file_path", path).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save add-on file"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Add-on file uploaded", Data: gin.H{"file_path": path, "file_name": originalName, "file_type": file.Header.Get("Content-Type")}})
 }
 
 func (h *Controller) CreateCourseModule(c *gin.Context) {
@@ -562,6 +649,9 @@ func (h *Controller) ReviewQuizSubmission(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Review saved, but course completion sync failed"})
 				return
 			}
+			if completed {
+				_ = services.AwardXP(c.Request.Context(), h.db, submission.UserID, services.XPEventCourseCompleted, "course", course.ID, services.XPCourseCompleted, "Completed a course", "Menyelesaikan course")
+			}
 		}
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Quiz submission reviewed", Data: gin.H{"submission": submission, "course_completed": completed, "certificate": certificate}})
@@ -622,6 +712,13 @@ func (h *Controller) saveCourse(c *gin.Context, creating bool) {
 	if strings.TrimSpace(req.Status) == "" {
 		req.Status = "draft"
 	}
+	if req.InstructorID > 0 {
+		var instructor models.User
+		if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND (is_instructor = ? OR is_admin = ?)", req.InstructorID, true, true).First(&instructor).Error; err != nil {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Selected instructor is not eligible"})
+			return
+		}
+	}
 	if creating {
 		if err := h.db.WithContext(c.Request.Context()).Create(&req).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create course"})
@@ -632,6 +729,21 @@ func (h *Controller) saveCourse(c *gin.Context, creating bool) {
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Course saved", Data: req})
+}
+
+func (h *Controller) normalizeCourseAddon(ctx context.Context, addon *models.CourseAddon) error {
+	if addon.ProductCategoryID == 0 {
+		if strings.TrimSpace(addon.Type) == "" {
+			addon.Type = "resource"
+		}
+		return nil
+	}
+	var category models.ProductCategory
+	if err := h.db.WithContext(ctx).First(&category, addon.ProductCategoryID).Error; err != nil {
+		return fmt.Errorf("Product/service category is invalid")
+	}
+	addon.Type = category.Slug
+	return nil
 }
 
 func (h *Controller) loadCourseByID(c *gin.Context) (models.Course, bool) {

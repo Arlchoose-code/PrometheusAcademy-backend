@@ -67,14 +67,20 @@ type FAQ struct {
 
 type Testimonial struct {
 	BaseModel
-	Name      string `gorm:"size:191;not null" json:"name"`
-	Role      string `gorm:"size:191" json:"role"`
-	Company   string `gorm:"size:191" json:"company"`
-	Avatar    string `gorm:"size:255" json:"avatar"`
-	ContentEn string `gorm:"type:text;not null" json:"content_en"`
-	ContentID string `gorm:"type:text;not null" json:"content_id"`
-	Rating    int    `gorm:"not null;default:5" json:"rating"`
-	IsActive  bool   `gorm:"not null;default:true;index" json:"is_active"`
+	Name           string `gorm:"size:191;not null" json:"name"`
+	Role           string `gorm:"size:191" json:"role"`
+	Company        string `gorm:"size:191" json:"company"`
+	Avatar         string `gorm:"size:255" json:"avatar"`
+	ContentEn      string `gorm:"type:text;not null" json:"content_en"`
+	ContentID      string `gorm:"type:text;not null" json:"content_id"`
+	Rating         int    `gorm:"not null;default:5" json:"rating"`
+	ReviewSource   string `gorm:"size:30;not null;default:'student';index" json:"review_source"`
+	DisplayContext string `gorm:"size:50;not null;default:'general';index" json:"display_context"`
+	ReviewStatus   string `gorm:"size:30;not null;default:'approved';index" json:"review_status"`
+	ExternalID     string `gorm:"size:191;index" json:"external_id"`
+	SourceURL      string `gorm:"size:500" json:"source_url"`
+	UserID         uint   `gorm:"index" json:"user_id"`
+	IsActive       bool   `gorm:"not null;default:true;index" json:"is_active"`
 }
 
 type Banner struct {

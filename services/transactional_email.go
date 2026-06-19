@@ -23,6 +23,7 @@ const (
 	EmailTemplateBookingConfirmation  = "email_template_booking_confirmation"
 	EmailTemplateCampaignNewsletter   = "email_template_campaign_newsletter"
 	EmailTemplateCampaignAnnouncement = "email_template_campaign_announcement"
+	EmailTemplateTalentReviewInvite   = "email_template_talent_review_invitation"
 )
 
 type TransactionalTemplateMapping struct {
@@ -45,6 +46,7 @@ func TransactionalTemplateMappings() []TransactionalTemplateMapping {
 		{Key: EmailTemplateBookingConfirmation, Label: "Booking confirmation", DefaultKey: "booking_confirmation", Description: "Sent after consultation booking is confirmed."},
 		{Key: EmailTemplateCampaignNewsletter, Label: "Campaign newsletter", DefaultKey: "campaign_newsletter", Description: "Default newsletter campaign template."},
 		{Key: EmailTemplateCampaignAnnouncement, Label: "Campaign announcement", DefaultKey: "campaign_announcement", Description: "Default announcement campaign template."},
+		{Key: EmailTemplateTalentReviewInvite, Label: "Talent review invitation", DefaultKey: "talent_review_invitation", Description: "Sent when an eligible Talent Bridge applicant is invited to leave a review."},
 	}
 }
 
@@ -95,12 +97,13 @@ func SendTransactionalTemplateEmail(ctx context.Context, db *gorm.DB, settingKey
 	}
 	subject = replaceMailerLayoutTokens(subject, replacements)
 	html = replaceMailerLayoutTokens(html, replacements)
-	messageID, err := SendBrevoEmail(ctx, settings, MailMessage{
+	messageID, err := SendMailerEmail(ctx, settings, MailMessage{
 		ToEmail: user.Email,
 		ToName:  user.Name,
 		Subject: subject,
 		HTML:    html,
 		Text:    strings.TrimSpace(stripHTMLForEmail(html)),
+		Tags:    []string{"prometheus-platform-user"},
 	})
 	if err != nil {
 		return err

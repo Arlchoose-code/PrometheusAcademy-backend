@@ -57,31 +57,36 @@ type ConfirmPasswordResetRequest struct {
 }
 
 type UserRoleRequest struct {
-	Role string `json:"role"`
+	Role    string `json:"role"`
+	Enabled *bool  `json:"enabled"`
 }
 
 type UserRequest struct {
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	Password  string `json:"password"`
-	Avatar    string `json:"avatar"`
-	Phone     string `json:"phone"`
-	IsStudent bool   `json:"is_student"`
-	IsAdmin   bool   `json:"is_admin"`
-	Language  string `json:"language"`
+	Name         string `json:"name"`
+	Email        string `json:"email"`
+	Password     string `json:"password"`
+	Avatar       string `json:"avatar"`
+	Phone        string `json:"phone"`
+	IsStudent    bool   `json:"is_student"`
+	IsAdmin      bool   `json:"is_admin"`
+	IsInstructor bool   `json:"is_instructor"`
+	Language     string `json:"language"`
 }
 
 type UserResponse struct {
-	ID              uint                `json:"id"`
-	Name            string              `json:"name"`
-	Email           string              `json:"email"`
-	Avatar          string              `json:"avatar"`
-	Phone           string              `json:"phone"`
-	IsStudent       bool                `json:"is_student"`
-	IsAdmin         bool                `json:"is_admin"`
-	Language        string              `json:"language"`
-	EmailVerifiedAt *time.Time          `json:"email_verified_at,omitempty"`
-	Profile         UserProfileResponse `json:"profile"`
+	ID                  uint                `json:"id"`
+	Name                string              `json:"name"`
+	Email               string              `json:"email"`
+	Avatar              string              `json:"avatar"`
+	Phone               string              `json:"phone"`
+	IsStudent           bool                `json:"is_student"`
+	IsAdmin             bool                `json:"is_admin"`
+	IsInstructor        bool                `json:"is_instructor"`
+	InstructorGrantedAt *time.Time          `json:"instructor_granted_at,omitempty"`
+	InstructorGrantedBy *uint               `json:"instructor_granted_by,omitempty"`
+	Language            string              `json:"language"`
+	EmailVerifiedAt     *time.Time          `json:"email_verified_at,omitempty"`
+	Profile             UserProfileResponse `json:"profile"`
 }
 
 type UserProfileRequest struct {

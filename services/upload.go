@@ -71,6 +71,10 @@ func (s *UploadService) SaveProductFile(file *multipart.FileHeader) (string, str
 	return s.saveRawFile(file, filepath.Join("uploads", "product-files"), "product-file")
 }
 
+func (s *UploadService) SaveCourseAddonFile(file *multipart.FileHeader) (string, string, error) {
+	return s.saveRawFile(file, filepath.Join("uploads", "course-addons"), "course-addon")
+}
+
 func (s *UploadService) SaveTalentCV(file *multipart.FileHeader) (string, string, error) {
 	return s.saveRawFile(file, filepath.Join("uploads", "talent-cv"), "cv")
 }

@@ -30,6 +30,7 @@ type ProductCategoryRequest struct {
 	NameID              string `json:"name_id"`
 	Slug                string `json:"slug"`
 	RequiresBookingTime bool   `json:"requires_booking_time"`
+	ShowInKnowledgeBase bool   `json:"show_in_knowledge_base"`
 }
 
 type ProductCategoryResponse struct {
@@ -153,6 +154,7 @@ type ConsultationSlotRequest struct {
 	Date        time.Time `json:"date"`
 	TimeStart   string    `json:"time_start"`
 	TimeEnd     string    `json:"time_end"`
+	Capacity    int       `json:"capacity"`
 	IsAvailable bool      `json:"is_available"`
 }
 

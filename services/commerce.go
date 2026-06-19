@@ -351,8 +351,14 @@ func FulfillSuccessfulOrder(ctx context.Context, db *gorm.DB, order models.Order
 			continue
 		}
 		enrollment := models.CourseEnrollment{UserID: order.UserID, CourseID: item.ItemID, EnrolledAt: time.Now()}
-		if err := db.WithContext(ctx).Where(models.CourseEnrollment{UserID: order.UserID, CourseID: item.ItemID}).Attrs(enrollment).FirstOrCreate(&enrollment).Error; err != nil {
-			return err
+		result := db.WithContext(ctx).Where(models.CourseEnrollment{UserID: order.UserID, CourseID: item.ItemID}).Attrs(enrollment).FirstOrCreate(&enrollment)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected > 0 {
+			if err := AwardXP(ctx, db, order.UserID, XPEventCourseEnrolled, "course", item.ItemID, XPCourseEnrolled, "Enrolled in a course", "Terdaftar di course"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -15,48 +15,52 @@ import (
 )
 
 type Config struct {
-	AppPort               string
-	AppEnv                string
-	DBHost                string
-	DBPort                string
-	DBUser                string
-	DBPass                string
-	DBName                string
-	JWTSecret             string
-	JWTRefreshSecret      string
-	MidtransServerKey     string
-	MidtransClientKey     string
-	MidtransEnv           string
-	StoragePath           string
-	CWebPBin              string
-	BaseURL               string
-	CORSOrigins           []string
-	RateLimitPerMinute    int
-	PaymentExpiresMinutes int
+	AppPort                 string
+	AppEnv                  string
+	DBHost                  string
+	DBPort                  string
+	DBUser                  string
+	DBPass                  string
+	DBName                  string
+	JWTSecret               string
+	JWTRefreshSecret        string
+	MidtransServerKey       string
+	MidtransClientKey       string
+	MidtransEnv             string
+	StoragePath             string
+	CWebPBin                string
+	BaseURL                 string
+	FrontendURL             string
+	CORSOrigins             []string
+	RateLimitPerMinute      int
+	PaymentExpiresMinutes   int
+	TalentReviewInviteHours int
 }
 
 func Load() Config {
 	loadEnvFile(".env")
 
 	return Config{
-		AppPort:               env("APP_PORT", "8080"),
-		AppEnv:                env("APP_ENV", "development"),
-		DBHost:                env("DB_HOST", "127.0.0.1"),
-		DBPort:                env("DB_PORT", "3306"),
-		DBUser:                env("DB_USER", "root"),
-		DBPass:                env("DB_PASS", ""),
-		DBName:                env("DB_NAME", "academyprometheus"),
-		JWTSecret:             env("JWT_SECRET", ""),
-		JWTRefreshSecret:      env("JWT_REFRESH_SECRET", ""),
-		MidtransServerKey:     env("MIDTRANS_SERVER_KEY", ""),
-		MidtransClientKey:     env("MIDTRANS_CLIENT_KEY", ""),
-		MidtransEnv:           env("MIDTRANS_ENV", "sandbox"),
-		StoragePath:           env("STORAGE_PATH", "storage"),
-		CWebPBin:              env("CWEBP_BIN", "cwebp"),
-		BaseURL:               env("BASE_URL", "http://localhost:8080"),
-		CORSOrigins:           splitCSV(env("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
-		RateLimitPerMinute:    intEnv("RATE_LIMIT_PER_MINUTE", 600),
-		PaymentExpiresMinutes: intEnv("PAYMENT_EXPIRES_MINUTES", 30),
+		AppPort:                 env("APP_PORT", "8080"),
+		AppEnv:                  env("APP_ENV", "development"),
+		DBHost:                  env("DB_HOST", "127.0.0.1"),
+		DBPort:                  env("DB_PORT", "3306"),
+		DBUser:                  env("DB_USER", "root"),
+		DBPass:                  env("DB_PASS", ""),
+		DBName:                  env("DB_NAME", "academyprometheus"),
+		JWTSecret:               env("JWT_SECRET", ""),
+		JWTRefreshSecret:        env("JWT_REFRESH_SECRET", ""),
+		MidtransServerKey:       env("MIDTRANS_SERVER_KEY", ""),
+		MidtransClientKey:       env("MIDTRANS_CLIENT_KEY", ""),
+		MidtransEnv:             env("MIDTRANS_ENV", "sandbox"),
+		StoragePath:             env("STORAGE_PATH", "storage"),
+		CWebPBin:                env("CWEBP_BIN", "cwebp"),
+		BaseURL:                 env("BASE_URL", "http://localhost:8080"),
+		FrontendURL:             env("FRONTEND_URL", "http://localhost:3000"),
+		CORSOrigins:             splitCSV(env("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
+		RateLimitPerMinute:      intEnv("RATE_LIMIT_PER_MINUTE", 600),
+		PaymentExpiresMinutes:   intEnv("PAYMENT_EXPIRES_MINUTES", 30),
+		TalentReviewInviteHours: intEnv("TALENT_REVIEW_INVITE_HOURS", 168),
 	}
 }
 

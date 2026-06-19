@@ -12,7 +12,18 @@ import (
 )
 
 func (h *Controller) ListConsultationSlots(c *gin.Context) {
-	rows, err := services.ListConsultationSlots(c.Request.Context(), h.db)
+	user := c.MustGet("user").(models.User)
+	var ownerID *uint
+	if orderID, err := strconv.ParseUint(c.Query("order"), 10, 64); err == nil && orderID > 0 {
+		requirement, err := services.ConsultationRequirementForOrder(c.Request.Context(), h.db, user.ID, uint(orderID))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+			return
+		}
+		owner := requirement.OwnerID
+		ownerID = &owner
+	}
+	rows, err := services.ListConsultationSlots(c.Request.Context(), h.db, ownerID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load consultation slots"})
 		return

@@ -442,15 +442,18 @@ func (s *AuthService) UserResponse(user models.User) structs.UserResponse {
 	}
 
 	return structs.UserResponse{
-		ID:              user.ID,
-		Name:            user.Name,
-		Email:           user.Email,
-		Avatar:          user.Avatar,
-		Phone:           user.Phone,
-		IsStudent:       user.IsStudent,
-		IsAdmin:         user.IsAdmin,
-		Language:        user.Language,
-		EmailVerifiedAt: user.EmailVerifiedAt,
+		ID:                  user.ID,
+		Name:                user.Name,
+		Email:               user.Email,
+		Avatar:              user.Avatar,
+		Phone:               user.Phone,
+		IsStudent:           user.IsStudent,
+		IsAdmin:             user.IsAdmin,
+		IsInstructor:        user.IsInstructor,
+		InstructorGrantedAt: user.InstructorGrantedAt,
+		InstructorGrantedBy: user.InstructorGrantedBy,
+		Language:            user.Language,
+		EmailVerifiedAt:     user.EmailVerifiedAt,
 		Profile: structs.UserProfileResponse{
 			BioEn:        profile.BioEn,
 			BioID:        profile.BioID,

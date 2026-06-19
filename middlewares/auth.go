@@ -80,6 +80,10 @@ func RoleGuard(roles ...string) gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		if allowed["instructor"] && user.IsInstructor {
+			c.Next()
+			return
+		}
 
 		c.AbortWithStatusJSON(http.StatusForbidden, structs.Response{Success: false, Message: "Forbidden"})
 	}

@@ -46,8 +46,8 @@ func (h *Controller) UpdateConsultationSettings(c *gin.Context) {
 }
 
 func (h *Controller) ListConsultationSlots(c *gin.Context) {
-	var slots []models.ConsultationSlot
-	if err := h.db.WithContext(c.Request.Context()).Order("date asc, time_start asc").Find(&slots).Error; err != nil {
+	slots, err := services.ListConsultationSlots(c.Request.Context(), h.db, nil)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load slots"})
 		return
 	}
@@ -55,17 +55,24 @@ func (h *Controller) ListConsultationSlots(c *gin.Context) {
 }
 
 func (h *Controller) CreateConsultationSlot(c *gin.Context) {
-	var slot models.ConsultationSlot
-	if err := c.ShouldBindJSON(&slot); err != nil {
+	var req services.ConsultationSlotPayload
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid slot payload"})
 		return
 	}
-	if strings.TrimSpace(slot.TimeStart) == "" || strings.TrimSpace(slot.TimeEnd) == "" || slot.Date.IsZero() {
+	slot, err := services.ConsultationSlotFromPayload(req)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Date, start time, and end time are required"})
 		return
 	}
-	if err := h.db.WithContext(c.Request.Context()).Create(&slot).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create slot"})
+	if !h.validConsultationSlotOwner(c, slot.OwnerID) {
+		return
+	}
+	if slot.OwnerID != 0 {
+		slot.Capacity = 1
+	}
+	if err := services.CreateConsultationSlotRecord(c.Request.Context(), h.db, &slot); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Consultation slot created", Data: slot})
@@ -77,13 +84,24 @@ func (h *Controller) UpdateConsultationSlot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid slot id"})
 		return
 	}
-	var slot models.ConsultationSlot
-	if err := c.ShouldBindJSON(&slot); err != nil {
+	var req services.ConsultationSlotPayload
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid slot payload"})
 		return
 	}
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.ConsultationSlot{}).Where("id = ?", uint(id)).Select("date", "time_start", "time_end", "is_available").Updates(slot).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save slot"})
+	slot, err := services.ConsultationSlotFromPayload(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Date, start time, and end time are required"})
+		return
+	}
+	if !h.validConsultationSlotOwner(c, slot.OwnerID) {
+		return
+	}
+	if slot.OwnerID != 0 {
+		slot.Capacity = 1
+	}
+	if err := services.UpdateConsultationSlotRecord(c.Request.Context(), h.db, uint(id), nil, slot); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
 	slot.ID = uint(id)
@@ -91,7 +109,16 @@ func (h *Controller) UpdateConsultationSlot(c *gin.Context) {
 }
 
 func (h *Controller) DeleteConsultationSlot(c *gin.Context) {
-	deleteRow[models.ConsultationSlot](h.db, "Consultation slot deleted")(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid slot id"})
+		return
+	}
+	if err := services.DeleteConsultationSlot(c.Request.Context(), h.db, uint(id), nil); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Consultation slot deleted"})
 }
 
 func (h *Controller) ListConsultationBookings(c *gin.Context) {
@@ -118,13 +145,21 @@ func (h *Controller) UpdateConsultationBooking(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid booking payload"})
 		return
 	}
-	updates := map[string]any{"notes": req.Notes}
-	if strings.TrimSpace(req.Status) != "" {
-		updates["status"] = strings.TrimSpace(req.Status)
-	}
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.ConsultationBooking{}).Where("id = ?", uint(id)).Updates(updates).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save booking"})
+	if err := services.UpdateConsultationBookingByProvider(c.Request.Context(), h.db, uint(id), nil, strings.TrimSpace(req.Status), req.Notes); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Consultation booking saved"})
+}
+
+func (h *Controller) validConsultationSlotOwner(c *gin.Context, ownerID uint) bool {
+	if ownerID == 0 {
+		return true
+	}
+	var owner models.User
+	if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND (is_instructor = ? OR is_admin = ?)", ownerID, true, true).First(&owner).Error; err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Slot owner must be an instructor or admin"})
+		return false
+	}
+	return true
 }

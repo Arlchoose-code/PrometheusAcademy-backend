@@ -13,12 +13,55 @@ import (
 
 func (h *Controller) GetTalentLanding(c *gin.Context) {
 	var testimonials []models.Testimonial
-	_ = h.db.WithContext(c.Request.Context()).Where("is_active = ?", true).Order("id desc").Limit(4).Find(&testimonials).Error
+	for _, source := range []string{"google", "student"} {
+		var sourceReviews []models.Testimonial
+		_ = h.db.WithContext(c.Request.Context()).
+			Where("is_active = ? AND review_status = ? AND display_context IN ? AND review_source = ?", true, "approved", []string{"talent_bridge", "all"}, source).
+			Order("created_at desc").
+			Limit(2).
+			Find(&sourceReviews).Error
+		testimonials = append(testimonials, sourceReviews...)
+	}
+	if remaining := 4 - len(testimonials); remaining > 0 {
+		selectedIDs := make([]uint, 0, len(testimonials))
+		for _, testimonial := range testimonials {
+			selectedIDs = append(selectedIDs, testimonial.ID)
+		}
+		query := h.db.WithContext(c.Request.Context()).
+			Where("is_active = ? AND review_status = ? AND display_context IN ?", true, "approved", []string{"talent_bridge", "all"})
+		if len(selectedIDs) > 0 {
+			query = query.Where("id NOT IN ?", selectedIDs)
+		}
+		var fallbackReviews []models.Testimonial
+		_ = query.Order("created_at desc").Limit(remaining).Find(&fallbackReviews).Error
+		testimonials = append(testimonials, fallbackReviews...)
+	}
+	var reviewStats struct {
+		Average float64 `json:"average"`
+		Count   int64   `json:"count"`
+	}
+	_ = h.db.WithContext(c.Request.Context()).
+		Model(&models.Testimonial{}).
+		Select("COALESCE(AVG(rating), 0) AS average, COUNT(*) AS count").
+		Where("is_active = ? AND review_status = ? AND display_context IN ?", true, "approved", []string{"talent_bridge", "all"}).
+		Scan(&reviewStats).Error
+	var googleCount int64
+	var studentCount int64
+	_ = h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("is_active = ? AND review_status = ? AND display_context IN ? AND review_source = ?", true, "approved", []string{"talent_bridge", "all"}, "google").Count(&googleCount).Error
+	_ = h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("is_active = ? AND review_status = ? AND display_context IN ? AND review_source = ?", true, "approved", []string{"talent_bridge", "all"}, "student").Count(&studentCount).Error
 	var jobs []models.TalentJob
 	_ = h.db.WithContext(c.Request.Context()).Where("status = ?", "open").Order("created_at desc").Limit(3).Find(&jobs).Error
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge data loaded", Data: gin.H{
 		"testimonials": testimonials,
-		"jobs":         jobs,
+		"review_summary": gin.H{
+			"average": reviewStats.Average,
+			"count":   reviewStats.Count,
+			"sources": gin.H{
+				"google":  googleCount,
+				"student": studentCount,
+			},
+		},
+		"jobs": jobs,
 	}})
 }
 
@@ -81,7 +124,11 @@ func (h *Controller) CreateTalentPlusApplication(c *gin.Context) {
 
 func (h *Controller) ListPartners(c *gin.Context) {
 	var partners []models.Partner
-	if err := h.db.WithContext(c.Request.Context()).Where("is_active = ?", true).Order("created_at desc").Find(&partners).Error; err != nil {
+	query := h.db.WithContext(c.Request.Context()).Where("is_active = ? AND status = ?", true, "active")
+	if partnerType := strings.TrimSpace(c.Query("type")); partnerType != "" {
+		query = query.Where("partner_type = ?", partnerType)
+	}
+	if err := query.Order("partner_type desc, created_at desc").Find(&partners).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load partners"})
 		return
 	}

@@ -149,11 +149,49 @@ func (h *Controller) ListPartners(c *gin.Context) {
 }
 
 func (h *Controller) CreatePartner(c *gin.Context) {
-	createRow[models.Partner](h.db, "Partner created")(c)
+	var partner models.Partner
+	if err := c.ShouldBindJSON(&partner); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid partner payload"})
+		return
+	}
+	normalizePartner(&partner)
+	if partner.Name == "" || partner.Country == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Partner name and country are required"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Create(&partner).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create partner"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Partner created", Data: partner})
 }
 
 func (h *Controller) UpdatePartner(c *gin.Context) {
-	updateRow[models.Partner](h.db, "Partner saved")(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid partner id"})
+		return
+	}
+	var partner models.Partner
+	if err := c.ShouldBindJSON(&partner); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid partner payload"})
+		return
+	}
+	normalizePartner(&partner)
+	if partner.Name == "" || partner.Country == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Partner name and country are required"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).
+		Model(&models.Partner{}).
+		Where("id = ?", uint(id)).
+		Select("partner_type", "name", "country", "website", "contact_info", "description_en", "description_id", "status", "notes", "is_active").
+		Updates(partner).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save partner"})
+		return
+	}
+	partner.ID = uint(id)
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Partner saved", Data: partner})
 }
 
 func (h *Controller) DeletePartner(c *gin.Context) {
@@ -162,6 +200,25 @@ func (h *Controller) DeletePartner(c *gin.Context) {
 
 func (h *Controller) UpdatePartnerLogo(c *gin.Context) {
 	h.updateUploadField(c, h.uploadService.SavePartnerLogo, &models.Partner{}, "logo", "Partner logo uploaded")
+}
+
+func normalizePartner(partner *models.Partner) {
+	partner.PartnerType = strings.ToLower(strings.TrimSpace(partner.PartnerType))
+	if partner.PartnerType != "company" {
+		partner.PartnerType = "university"
+	}
+	partner.Name = strings.TrimSpace(partner.Name)
+	partner.Country = strings.TrimSpace(partner.Country)
+	partner.Website = strings.TrimSpace(partner.Website)
+	partner.ContactInfo = strings.TrimSpace(partner.ContactInfo)
+	partner.DescriptionEn = strings.TrimSpace(partner.DescriptionEn)
+	partner.DescriptionID = strings.TrimSpace(partner.DescriptionID)
+	partner.Notes = strings.TrimSpace(partner.Notes)
+	partner.Status = strings.ToLower(strings.TrimSpace(partner.Status))
+	if partner.Status != "inactive" {
+		partner.Status = "active"
+	}
+	partner.IsActive = partner.Status == "active"
 }
 
 func (h *Controller) ListLeadNotes(c *gin.Context) {

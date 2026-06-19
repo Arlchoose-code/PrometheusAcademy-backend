@@ -53,6 +53,19 @@ type TalentPlusApplication struct {
 	Status            string `gorm:"size:30;not null;default:'new';index" json:"status"`
 }
 
+type TalentReviewInvitation struct {
+	BaseModel
+	ApplicationType string     `gorm:"size:30;not null;uniqueIndex:idx_talent_review_application;index" json:"application_type"`
+	ApplicationID   uint       `gorm:"not null;uniqueIndex:idx_talent_review_application;index" json:"application_id"`
+	Name            string     `gorm:"size:191;not null" json:"name"`
+	Email           string     `gorm:"size:191;not null;index" json:"email"`
+	TokenHash       string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	ExpiresAt       time.Time  `gorm:"not null;index" json:"expires_at"`
+	SentAt          *time.Time `gorm:"index" json:"sent_at"`
+	UsedAt          *time.Time `gorm:"index" json:"used_at"`
+	TestimonialID   uint       `gorm:"index" json:"testimonial_id"`
+}
+
 type PartnerApplication struct {
 	BaseModel
 	UniversityName   string `gorm:"size:191;not null" json:"university_name"`
@@ -68,11 +81,15 @@ type PartnerApplication struct {
 
 type Partner struct {
 	BaseModel
+	PartnerType   string `gorm:"size:30;not null;default:'university';index" json:"partner_type"`
 	Name          string `gorm:"size:191;not null" json:"name"`
 	Country       string `gorm:"size:100;not null" json:"country"`
 	Logo          string `gorm:"size:255" json:"logo"`
 	Website       string `gorm:"size:255" json:"website"`
+	ContactInfo   string `gorm:"type:text" json:"contact_info"`
 	DescriptionEn string `gorm:"type:text" json:"description_en"`
 	DescriptionID string `gorm:"type:text" json:"description_id"`
+	Status        string `gorm:"size:30;not null;default:'active';index" json:"status"`
+	Notes         string `gorm:"type:text" json:"notes"`
 	IsActive      bool   `gorm:"not null;default:true;index" json:"is_active"`
 }
