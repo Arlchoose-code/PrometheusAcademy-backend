@@ -74,6 +74,57 @@ func (h *Controller) UpdatePageImage(c *gin.Context) {
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Page image uploaded", Data: gin.H{"image_path": path}})
 }
 
+func (h *Controller) ListPageSections(c *gin.Context) {
+	pageSlug := strings.TrimSpace(c.Param("slug"))
+	if pageSlug == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Page slug is required"})
+		return
+	}
+	var rows []models.PageSection
+	if err := h.db.WithContext(c.Request.Context()).Where("page_slug = ?", pageSlug).Order("`order` asc, id asc").Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load page sections"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Page sections loaded", Data: rows})
+}
+
+func (h *Controller) CreatePageSection(c *gin.Context) {
+	createRow[models.PageSection](h.db, "Page section created")(c)
+}
+
+func (h *Controller) UpdatePageSection(c *gin.Context) {
+	updateRow[models.PageSection](h.db, "Page section saved")(c)
+}
+
+func (h *Controller) DeletePageSection(c *gin.Context) {
+	deleteRow[models.PageSection](h.db, "Page section deleted")(c)
+}
+
+func (h *Controller) ReorderPageSections(c *gin.Context) {
+	var req []struct {
+		ID    uint `json:"id"`
+		Order int  `json:"order"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid page section order payload"})
+		return
+	}
+	for _, item := range req {
+		if item.ID == 0 {
+			continue
+		}
+		if err := h.db.WithContext(c.Request.Context()).Model(&models.PageSection{}).Where("id = ?", item.ID).Update("order", item.Order).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to reorder page sections"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Page sections reordered"})
+}
+
+func (h *Controller) UpdatePageSectionImage(c *gin.Context) {
+	h.updateUploadField(c, h.uploadService.SavePageImage, &models.PageSection{}, "image_path", "Page section image uploaded")
+}
+
 func (h *Controller) ReorderFAQs(c *gin.Context) {
 	var req []struct {
 		ID    uint `json:"id"`

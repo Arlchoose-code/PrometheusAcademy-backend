@@ -227,7 +227,24 @@ func (h *Controller) GetPage(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Page loaded", Data: page})
+	var sections []models.PageSection
+	h.db.WithContext(c.Request.Context()).Where("page_slug = ? AND is_active = ?", slug, true).Order("`order` asc, id asc").Find(&sections)
+
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Page loaded", Data: gin.H{"page": page, "sections": sections}})
+}
+
+func (h *Controller) ListPageSections(c *gin.Context) {
+	pageSlug := strings.TrimSpace(c.Param("slug"))
+	if pageSlug == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Page slug is required"})
+		return
+	}
+	var sections []models.PageSection
+	if err := h.db.WithContext(c.Request.Context()).Where("page_slug = ? AND is_active = ?", pageSlug, true).Order("`order` asc, id asc").Find(&sections).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load page sections"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Page sections loaded", Data: sections})
 }
 
 func (h *Controller) GetSEO(c *gin.Context) {

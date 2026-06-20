@@ -153,6 +153,13 @@ func registerCMSAdminRoutes(admin *gin.RouterGroup, adminController *admincontro
 	admin.PUT("/cms/pages/:slug", adminController.UpdatePage)
 	admin.POST("/cms/pages/:slug/image", adminController.UpdatePageImage)
 
+	admin.GET("/cms/pages/:slug/sections", adminController.ListPageSections)
+	admin.POST("/cms/page-sections", adminController.CreatePageSection)
+	admin.PUT("/cms/page-sections/reorder", adminController.ReorderPageSections)
+	admin.PUT("/cms/page-sections/:id", adminController.UpdatePageSection)
+	admin.DELETE("/cms/page-sections/:id", adminController.DeletePageSection)
+	admin.POST("/cms/page-sections/:id/image", adminController.UpdatePageSectionImage)
+
 	admin.GET("/cms/faqs", adminController.ListFAQs)
 	admin.POST("/cms/faqs", adminController.CreateFAQ)
 	admin.PUT("/cms/faqs/reorder", adminController.ReorderFAQs)

@@ -22,6 +22,7 @@ func RegisterPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Confi
 	router.GET("/faqs/public", publicController.ListPublicFAQs)
 	router.GET("/banners/public", publicController.ListPublicBanners)
 	router.GET("/pages/:slug", publicController.GetPage)
+	router.GET("/pages/:slug/sections", publicController.ListPageSections)
 	router.GET("/seo/:slug", publicController.GetSEO)
 	router.GET("/course-categories", publicController.ListCourseCategories)
 	router.GET("/courses", publicController.ListCourses)

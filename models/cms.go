@@ -56,6 +56,20 @@ type Page struct {
 	ContentID     string `gorm:"type:longtext" json:"content_id"`
 }
 
+type PageSection struct {
+	BaseModel
+	PageSlug   string `gorm:"size:191;not null;index:idx_page_section" json:"page_slug"`
+	SectionKey string `gorm:"size:80;not null;index:idx_page_section" json:"section_key"`
+	TitleEn    string `gorm:"size:255" json:"title_en"`
+	TitleID    string `gorm:"size:255" json:"title_id"`
+	ContentEn  string `gorm:"type:longtext" json:"content_en"`
+	ContentID  string `gorm:"type:longtext" json:"content_id"`
+	ImagePath  string `gorm:"size:255" json:"image_path"`
+	IconName   string `gorm:"size:80" json:"icon_name"`
+	Order      int    `gorm:"not null;default:0" json:"order"`
+	IsActive   bool   `gorm:"not null;default:true" json:"is_active"`
+}
+
 type FAQ struct {
 	BaseModel
 	QuestionEn string `gorm:"type:text;not null" json:"question_en"`

@@ -80,6 +80,24 @@ type PageResponse struct {
 	PageRequest
 }
 
+type PageSectionRequest struct {
+	PageSlug   string `json:"page_slug"`
+	SectionKey string `json:"section_key"`
+	TitleEn    string `json:"title_en"`
+	TitleID    string `json:"title_id"`
+	ContentEn  string `json:"content_en"`
+	ContentID  string `json:"content_id"`
+	ImagePath  string `json:"image_path"`
+	IconName   string `json:"icon_name"`
+	Order      int    `json:"order"`
+	IsActive   bool   `json:"is_active"`
+}
+
+type PageSectionResponse struct {
+	ModelResponse
+	PageSectionRequest
+}
+
 type FAQRequest struct {
 	QuestionEn string `json:"question_en"`
 	QuestionID string `json:"question_id"`

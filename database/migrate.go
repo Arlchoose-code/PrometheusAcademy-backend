@@ -66,6 +66,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Setting{},
 		&models.SEOMeta{},
 		&models.Page{},
+		&models.PageSection{},
 		&models.FAQ{},
 		&models.Testimonial{},
 		&models.Banner{},
