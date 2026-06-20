@@ -65,7 +65,7 @@ type PageSection struct {
 	ContentEn  string `gorm:"type:longtext" json:"content_en"`
 	ContentID  string `gorm:"type:longtext" json:"content_id"`
 	ImagePath  string `gorm:"size:255" json:"image_path"`
-	IconName   string `gorm:"size:80" json:"icon_name"`
+	IconName   string `gorm:"size:512" json:"icon_name"`
 	Order      int    `gorm:"not null;default:0" json:"order"`
 	IsActive   bool   `gorm:"not null;default:true" json:"is_active"`
 }
