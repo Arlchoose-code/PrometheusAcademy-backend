@@ -88,10 +88,17 @@ type CouponUsage struct {
 
 type Invoice struct {
 	BaseModel
-	OrderID       uint      `gorm:"not null;uniqueIndex" json:"order_id"`
-	InvoiceNumber string    `gorm:"size:191;not null;uniqueIndex" json:"invoice_number"`
-	FilePath      string    `gorm:"size:255;not null" json:"file_path"`
-	IssuedAt      time.Time `gorm:"not null" json:"issued_at"`
+	OrderID           uint       `gorm:"not null;uniqueIndex" json:"order_id"`
+	InvoiceNumber     string     `gorm:"size:191;not null;uniqueIndex" json:"invoice_number"`
+	FilePath          string     `gorm:"size:700" json:"file_path"`
+	IssuedAt          time.Time  `gorm:"not null" json:"issued_at"`
+	TemplateID        uint       `gorm:"index" json:"template_id"`
+	TemplateVersionID uint       `gorm:"index" json:"template_version_id"`
+	Locale            string     `gorm:"size:5;not null;default:'en'" json:"locale"`
+	SnapshotJSON      string     `gorm:"type:longtext" json:"-"`
+	SnapshotChecksum  string     `gorm:"size:64" json:"snapshot_checksum"`
+	CachedObjectKey   string     `gorm:"size:700" json:"cached_object_key"`
+	CacheExpiresAt    *time.Time `gorm:"index" json:"cache_expires_at"`
 }
 
 type ConsultationSlot struct {

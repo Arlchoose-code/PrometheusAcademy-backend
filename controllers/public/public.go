@@ -3,6 +3,7 @@ package public
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -57,6 +58,25 @@ func (h *Controller) ServeUpload(c *gin.Context) {
 	cleanPath := path.Clean("/" + c.Param("filepath"))
 	if strings.HasPrefix(cleanPath, "/certificates/") || strings.HasPrefix(cleanPath, "/product-files/") || strings.HasPrefix(cleanPath, "/invoices/") {
 		c.Status(http.StatusNotFound)
+		return
+	}
+	if h.cfg.StorageProvider == "r2" {
+		storage, err := services.NewObjectStorage(c.Request.Context(), h.cfg)
+		if err != nil {
+			c.Status(http.StatusServiceUnavailable)
+			return
+		}
+		reader, info, err := storage.Open(c.Request.Context(), "uploads/"+strings.TrimPrefix(cleanPath, "/"))
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		defer reader.Close()
+		if info.ContentType != "" {
+			c.Header("Content-Type", info.ContentType)
+		}
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = io.Copy(c.Writer, reader)
 		return
 	}
 	c.File(filepath.Join(h.cfg.StoragePath, "uploads", filepath.FromSlash(strings.TrimPrefix(cleanPath, "/"))))

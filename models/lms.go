@@ -129,11 +129,18 @@ type AssignmentSubmission struct {
 
 type Certificate struct {
 	BaseModel
-	UserID         uint      `gorm:"not null;index" json:"user_id"`
-	CourseID       uint      `gorm:"not null;index" json:"course_id"`
-	UUID           string    `gorm:"size:36;uniqueIndex" json:"uuid"`
-	IssuedAt       time.Time `gorm:"not null" json:"issued_at"`
-	CertificateURL string    `gorm:"size:255;not null" json:"certificate_url"`
+	UserID            uint       `gorm:"not null;index" json:"user_id"`
+	CourseID          uint       `gorm:"not null;index" json:"course_id"`
+	UUID              string     `gorm:"size:36;uniqueIndex" json:"uuid"`
+	IssuedAt          time.Time  `gorm:"not null" json:"issued_at"`
+	CertificateURL    string     `gorm:"size:255;not null" json:"certificate_url"`
+	TemplateID        uint       `gorm:"index" json:"template_id"`
+	TemplateVersionID uint       `gorm:"index" json:"template_version_id"`
+	Locale            string     `gorm:"size:5;not null;default:'en'" json:"locale"`
+	SnapshotJSON      string     `gorm:"type:longtext" json:"-"`
+	SnapshotChecksum  string     `gorm:"size:64" json:"snapshot_checksum"`
+	CachedObjectKey   string     `gorm:"size:700" json:"cached_object_key"`
+	CacheExpiresAt    *time.Time `gorm:"index" json:"cache_expires_at"`
 }
 
 type DripSchedule struct {

@@ -82,6 +82,12 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Event{},
 		&models.EventAttendance{},
 		&models.JWTBlacklist{},
+		&models.StoredObject{},
+		&models.StorageMigrationJob{},
+		&models.StorageMigrationItem{},
+		&models.StorageBackup{},
+		&models.DocumentTemplate{},
+		&models.DocumentTemplateVersion{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}

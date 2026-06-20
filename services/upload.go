@@ -22,12 +22,17 @@ import (
 )
 
 type UploadService struct {
-	db  *gorm.DB
-	cfg config.Config
+	db      *gorm.DB
+	cfg     config.Config
+	storage ObjectStorage
 }
 
 func NewUploadService(db *gorm.DB, cfg config.Config) *UploadService {
-	return &UploadService{db: db, cfg: cfg}
+	storage, err := NewObjectStorage(context.Background(), cfg)
+	if err != nil {
+		storage = &LocalStorage{Root: cfg.StoragePath}
+	}
+	return &UploadService{db: db, cfg: cfg, storage: storage}
 }
 
 func (s *UploadService) SaveUserAvatar(ctx context.Context, userID uint, file *multipart.FileHeader) (string, error) {
@@ -132,30 +137,11 @@ func (s *UploadService) saveRawFile(file *multipart.FileHeader, relativeDir, pre
 	}
 	defer source.Close()
 
-	storageRoot := s.cfg.StoragePath
-	if storageRoot == "" {
-		storageRoot = "storage"
-	}
-	targetDir := filepath.Join(storageRoot, relativeDir)
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return "", "", fmt.Errorf("create upload dir: %w", err)
-	}
-
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	filename := fmt.Sprintf("%s-%d%s", prefix, time.Now().UnixNano(), ext)
-	targetPath := filepath.Join(targetDir, filename)
-
-	dest, err := os.Create(targetPath)
-	if err != nil {
-		return "", "", fmt.Errorf("create upload file: %w", err)
-	}
-	if _, err := io.Copy(dest, source); err != nil {
-		dest.Close()
-		_ = os.Remove(targetPath)
-		return "", "", fmt.Errorf("write upload file: %w", err)
-	}
-	if err := dest.Close(); err != nil {
-		return "", "", fmt.Errorf("close upload file: %w", err)
+	key := filepath.ToSlash(filepath.Join(relativeDir, filename))
+	if _, err := s.storage.Put(context.Background(), PutObjectInput{Key: key, Body: source, ContentType: file.Header.Get("Content-Type")}); err != nil {
+		return "", "", fmt.Errorf("store upload: %w", err)
 	}
 
 	publicPath := "/" + filepath.ToSlash(filepath.Join(relativeDir, filename))
@@ -209,18 +195,14 @@ func (s *UploadService) saveWebP(file *multipart.FileHeader, relativeDir, prefix
 	}
 	defer os.Remove(tempPath)
 
-	storageRoot := s.cfg.StoragePath
-	if storageRoot == "" {
-		storageRoot = "storage"
-	}
-
-	targetDir := filepath.Join(storageRoot, relativeDir)
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return "", fmt.Errorf("create upload dir: %w", err)
-	}
-
 	filename := fmt.Sprintf("%s-%d.webp", prefix, time.Now().UnixNano())
-	targetPath := filepath.Join(targetDir, filename)
+	target, err := os.CreateTemp("", "prometheus-webp-*.webp")
+	if err != nil {
+		return "", fmt.Errorf("create webp target: %w", err)
+	}
+	targetPath := target.Name()
+	target.Close()
+	defer os.Remove(targetPath)
 
 	cwebpBin := s.cfg.CWebPBin
 	if cwebpBin == "" {
@@ -229,6 +211,15 @@ func (s *UploadService) saveWebP(file *multipart.FileHeader, relativeDir, prefix
 
 	if err := convertToWebP(cwebpBin, tempPath, targetPath); err != nil {
 		return "", err
+	}
+	converted, err := os.Open(targetPath)
+	if err != nil {
+		return "", err
+	}
+	defer converted.Close()
+	key := filepath.ToSlash(filepath.Join(relativeDir, filename))
+	if _, err := s.storage.Put(context.Background(), PutObjectInput{Key: key, Body: converted, ContentType: "image/webp", CacheControl: "public, max-age=31536000, immutable"}); err != nil {
+		return "", fmt.Errorf("store webp: %w", err)
 	}
 
 	publicPath := "/" + filepath.ToSlash(filepath.Join(relativeDir, filename))
