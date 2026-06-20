@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base32"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,20 +18,35 @@ import (
 )
 
 func EnsureCertificateUUID(ctx context.Context, db *gorm.DB, certificate *models.Certificate) error {
-	if db == nil || certificate == nil || certificate.ID == 0 || strings.TrimSpace(certificate.UUID) != "" {
+	if db == nil || certificate == nil || certificate.ID == 0 {
+		return nil
+	}
+	if certificate.CertificateCode != nil && strings.TrimSpace(*certificate.CertificateCode) != "" {
 		return nil
 	}
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		uuid, err := newUUID()
+		code, err := newCertificateCode()
 		if err != nil {
 			return err
 		}
-		if err := db.WithContext(ctx).Model(certificate).Update("uuid", uuid).Error; err != nil {
+		var count int64
+		if err := db.WithContext(ctx).Model(&models.Certificate{}).Where("certificate_code = ?", code).Count(&count).Error; err != nil || count > 0 {
 			lastErr = err
 			continue
 		}
-		certificate.UUID = uuid
+		updates := map[string]any{"certificate_code": code}
+		if strings.TrimSpace(certificate.UUID) == "" {
+			updates["uuid"] = code
+		}
+		if err := db.WithContext(ctx).Model(certificate).Updates(updates).Error; err != nil {
+			lastErr = err
+			continue
+		}
+		certificate.CertificateCode = &code
+		if certificate.UUID == "" {
+			certificate.UUID = code
+		}
 		return nil
 	}
 	if lastErr != nil {
@@ -39,17 +56,19 @@ func EnsureCertificateUUID(ctx context.Context, db *gorm.DB, certificate *models
 }
 
 func CertificateDownloadURL(certificate models.Certificate) string {
-	if strings.TrimSpace(certificate.UUID) == "" {
+	code := CertificateDisplayCode(certificate)
+	if code == "" {
 		return ""
 	}
-	return "/certificates/" + certificate.UUID
+	return "/certificates/" + code
 }
 
 func CertificateFilePublicPath(certificate models.Certificate) string {
-	if strings.TrimSpace(certificate.UUID) == "" {
+	code := CertificateDisplayCode(certificate)
+	if code == "" {
 		return "/uploads/certificates/certificate-pending.pdf"
 	}
-	return "/uploads/certificates/certificate-" + certificate.UUID + ".pdf"
+	return "/uploads/certificates/certificate-" + code + ".pdf"
 }
 
 func EnsureCertificatePDF(ctx context.Context, db *gorm.DB, cfg config.Config, certificate models.Certificate) (string, error) {
@@ -66,6 +85,114 @@ func EnsureCertificatePDF(ctx context.Context, db *gorm.DB, cfg config.Config, c
 		return "", err
 	}
 	return targetPath, nil
+}
+
+func EnsureCertificatePDFBytes(ctx context.Context, db *gorm.DB, cfg config.Config, certificate models.Certificate) ([]byte, error) {
+	var version models.DocumentTemplateVersion
+	if certificate.TemplateVersionID == 0 {
+		_, fallbackVersion, err := SelectDocumentTemplateVersion(ctx, db, "certificate", 0)
+		if err != nil {
+			return nil, err
+		}
+		version = fallbackVersion
+	} else if err := db.WithContext(ctx).First(&version, certificate.TemplateVersionID).Error; err != nil {
+		return nil, err
+	}
+	var variables map[string]string
+	if err := json.Unmarshal([]byte(certificate.SnapshotJSON), &variables); err != nil {
+		var generic map[string]any
+		_ = json.Unmarshal([]byte(certificate.SnapshotJSON), &generic)
+		variables = mapStringAny(generic)
+	}
+	if len(variables) == 0 {
+		variables = certificateFallbackVariables(ctx, db, certificate)
+	}
+	for key, value := range certificateFallbackVariables(ctx, db, certificate) {
+		if strings.TrimSpace(variables[key]) == "" {
+			variables[key] = value
+		}
+	}
+	variables["certificate_number"] = CertificateDisplayCode(certificate)
+	variables["document_number"] = CertificateDisplayCode(certificate)
+	variables["verification_url"] = CertificateDownloadURL(certificate)
+	if certificate.Locale == "id" {
+		variables["course_name"] = fallbackString(variables["course_name_id"], variables["course_name"])
+	} else {
+		variables["course_name"] = fallbackString(variables["course_name_en"], variables["course_name"])
+	}
+	template := version.HTMLEn
+	if certificate.Locale == "id" && strings.TrimSpace(version.HTMLID) != "" {
+		template = version.HTMLID
+	}
+	orientation := "landscape"
+	pdf, err := RenderDocumentPDF(ctx, cfg, template, variables, orientation)
+	if err != nil {
+		return nil, err
+	}
+	if cacheDays := DocumentPDFCacheDays(ctx, db); cacheDays > 0 {
+		key := fmt.Sprintf("generated/certificates/%s/%d-%s.pdf", CertificateDisplayCode(certificate), version.ID, certificate.SnapshotChecksum)
+		_ = StoreGeneratedPDF(ctx, db, cfg, key, pdf, CertificateFilePublicPath(certificate), cacheDays)
+		expires := time.Now().Add(time.Duration(cacheDays) * 24 * time.Hour)
+		_ = db.WithContext(ctx).Model(&certificate).Updates(map[string]any{"cached_object_key": key, "cache_expires_at": &expires}).Error
+	}
+	return pdf, nil
+}
+
+func certificateFallbackVariables(ctx context.Context, db *gorm.DB, certificate models.Certificate) map[string]string {
+	var user models.User
+	var course models.Course
+	_ = db.WithContext(ctx).First(&user, certificate.UserID).Error
+	_ = db.WithContext(ctx).First(&course, certificate.CourseID).Error
+	studentName := strings.TrimSpace(user.Name)
+	if studentName == "" {
+		studentName = "Prometheus Learner"
+	}
+	courseName := strings.TrimSpace(course.TitleEn)
+	if courseName == "" {
+		courseName = strings.TrimSpace(course.TitleID)
+	}
+	if courseName == "" {
+		courseName = "Prometheus Academy Course"
+	}
+	issuedAt := certificate.IssuedAt
+	if issuedAt.IsZero() {
+		issuedAt = time.Now()
+	}
+	return map[string]string{
+		"site_name":          "Prometheus Academy",
+		"document_number":    CertificateDisplayCode(certificate),
+		"recipient_name":     studentName,
+		"recipient_email":    user.Email,
+		"issued_at":          issuedAt.Format("2006-01-02"),
+		"locale":             "en",
+		"verification_url":   CertificateDownloadURL(certificate),
+		"qr_verification":    CertificateDownloadURL(certificate),
+		"certificate_number": CertificateDisplayCode(certificate),
+		"certificate_uuid":   certificate.UUID,
+		"student_name":       studentName,
+		"course_name":        courseName,
+		"course_name_en":     fallbackString(course.TitleEn, course.TitleID),
+		"course_name_id":     fallbackString(course.TitleID, course.TitleEn),
+		"instructor_name":    "Prometheus Academy",
+		"completion_date":    issuedAt.Format("2006-01-02"),
+		"signatory_name":     "Prometheus Academy",
+		"signatory_title":    "Academic Team",
+		"signature_image":    "",
+	}
+}
+
+func CertificateDisplayCode(certificate models.Certificate) string {
+	if certificate.CertificateCode != nil && strings.TrimSpace(*certificate.CertificateCode) != "" {
+		return strings.ToUpper(strings.TrimSpace(*certificate.CertificateCode))
+	}
+	code := strings.TrimSpace(certificate.UUID)
+	if len(code) == 36 {
+		code = strings.ToUpper(strings.ReplaceAll(code, "-", ""))
+		if len(code) > 12 {
+			return code[:12]
+		}
+	}
+	return strings.ToUpper(code)
 }
 
 func WriteCertificatePDF(ctx context.Context, db *gorm.DB, cfg config.Config, course models.Course, userID uint, publicPath string) error {
@@ -93,6 +220,19 @@ func WriteCertificatePDF(ctx context.Context, db *gorm.DB, cfg config.Config, co
 }
 
 func LooksLikeUUID(value string) bool {
+	return LooksLikeCertificateCode(value)
+}
+
+func LooksLikeCertificateCode(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) == 12 {
+		for _, char := range value {
+			if (char < '0' || char > '9') && (char < 'A' || char > 'Z') {
+				return false
+			}
+		}
+		return true
+	}
 	if len(value) != 36 {
 		return false
 	}
@@ -108,6 +248,19 @@ func LooksLikeUUID(value string) bool {
 		}
 	}
 	return true
+}
+
+func newCertificateCode() (string, error) {
+	bytes := make([]byte, 8)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("read random certificate code bytes: %w", err)
+	}
+	code := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes)
+	code = strings.NewReplacer("I", "A", "O", "B").Replace(code)
+	if len(code) > 12 {
+		code = code[:12]
+	}
+	return code, nil
 }
 
 func newUUID() (string, error) {

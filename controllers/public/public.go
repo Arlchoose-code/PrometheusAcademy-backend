@@ -60,17 +60,10 @@ func (h *Controller) ServeUpload(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	if h.cfg.StorageProvider == "r2" {
-		storage, err := services.NewObjectStorage(c.Request.Context(), h.cfg)
-		if err != nil {
-			c.Status(http.StatusServiceUnavailable)
-			return
-		}
-		reader, info, err := storage.Open(c.Request.Context(), "uploads/"+strings.TrimPrefix(cleanPath, "/"))
-		if err != nil {
-			c.Status(http.StatusNotFound)
-			return
-		}
+	effectiveCfg := services.EffectiveStorageConfig(c.Request.Context(), h.db, h.cfg)
+	publicPath := "/uploads/" + strings.TrimPrefix(cleanPath, "/")
+	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, publicPath)
+	if err == nil {
 		defer reader.Close()
 		if info.ContentType != "" {
 			c.Header("Content-Type", info.ContentType)
@@ -79,7 +72,7 @@ func (h *Controller) ServeUpload(c *gin.Context) {
 		_, _ = io.Copy(c.Writer, reader)
 		return
 	}
-	c.File(filepath.Join(h.cfg.StoragePath, "uploads", filepath.FromSlash(strings.TrimPrefix(cleanPath, "/"))))
+	c.File(filepath.Join(effectiveCfg.StoragePath, "uploads", filepath.FromSlash(strings.TrimPrefix(cleanPath, "/"))))
 }
 
 func (h *Controller) GetPublicSettings(c *gin.Context) {

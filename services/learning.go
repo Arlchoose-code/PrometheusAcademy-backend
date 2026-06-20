@@ -175,17 +175,47 @@ func SyncCourseCompletion(ctx context.Context, db *gorm.DB, cfg config.Config, c
 	if err := EnsureCertificateUUID(ctx, db, &certificate); err != nil {
 		return nil, false, err
 	}
-	filePath := CertificateFilePublicPath(certificate)
-	if err := WriteCertificatePDF(ctx, db, cfg, course, userID, filePath); err != nil {
-		return nil, false, err
+	var user models.User
+	_ = db.WithContext(ctx).First(&user, userID).Error
+	_, version, _ := SelectDocumentTemplateVersion(ctx, db, "certificate", 0)
+	courseTitle := course.TitleEn
+	if strings.TrimSpace(courseTitle) == "" {
+		courseTitle = course.TitleID
 	}
+	snapshot := map[string]any{
+		"site_name":          "Prometheus Academy",
+		"document_number":    CertificateDisplayCode(certificate),
+		"recipient_name":     fallbackString(user.Name, "Prometheus Learner"),
+		"recipient_email":    user.Email,
+		"issued_at":          certificate.IssuedAt.Format("2006-01-02"),
+		"locale":             fallbackString(user.Language, "en"),
+		"verification_url":   localizedFrontendURL(cfg, fallbackString(user.Language, "en"), "/certificates/"+certificate.UUID),
+		"certificate_number": CertificateDisplayCode(certificate),
+		"certificate_uuid":   certificate.UUID,
+		"student_name":       fallbackString(user.Name, "Prometheus Learner"),
+		"course_name":        courseTitle,
+		"course_name_en":     fallbackString(course.TitleEn, course.TitleID),
+		"course_name_id":     fallbackString(course.TitleID, course.TitleEn),
+		"instructor_name":    "Prometheus Academy",
+		"completion_date":    certificate.IssuedAt.Format("2006-01-02"),
+		"signatory_name":     "Prometheus Academy",
+		"signatory_title":    "Academic Team",
+	}
+	rawSnapshot, snapshotChecksum := checksumJSON(snapshot)
+	updates := map[string]any{"template_id": version.TemplateID, "template_version_id": version.ID, "locale": fallbackString(user.Language, "en"), "snapshot_json": rawSnapshot, "snapshot_checksum": snapshotChecksum}
 	protectedURL := CertificateDownloadURL(certificate)
 	if certificate.CertificateURL != protectedURL {
-		if err := db.WithContext(ctx).Model(&certificate).Update("certificate_url", protectedURL).Error; err != nil {
-			return nil, false, err
-		}
+		updates["certificate_url"] = protectedURL
 		certificate.CertificateURL = protectedURL
 	}
+	if err := db.WithContext(ctx).Model(&certificate).Updates(updates).Error; err != nil {
+		return nil, false, err
+	}
+	certificate.TemplateID = version.TemplateID
+	certificate.TemplateVersionID = version.ID
+	certificate.Locale = fallbackString(user.Language, "en")
+	certificate.SnapshotJSON = rawSnapshot
+	certificate.SnapshotChecksum = snapshotChecksum
 	_ = SendCertificateReadyEmail(ctx, db, cfg, course, certificate)
 	return &certificate, true, nil
 }

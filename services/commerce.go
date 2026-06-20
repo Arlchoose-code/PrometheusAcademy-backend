@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -369,20 +371,206 @@ func EnsureInvoice(ctx context.Context, db *gorm.DB, cfg config.Config, order mo
 	if err := db.WithContext(ctx).Where(models.Invoice{OrderID: order.ID}).First(&invoice).Error; err == nil {
 		return invoice, nil
 	}
+	var user models.User
+	_ = db.WithContext(ctx).First(&user, order.UserID).Error
+	_, version, _ := SelectDocumentTemplateVersion(ctx, db, "invoice", 0)
+	snapshot := map[string]any{
+		"invoice_number":    fmt.Sprintf("INV-%06d", order.ID),
+		"customer_name":     fallbackString(user.Name, "Customer"),
+		"customer_email":    user.Email,
+		"subtotal":          fmt.Sprintf("Rp %d", order.TotalAmount),
+		"discount":          "Rp 0",
+		"total":             fmt.Sprintf("Rp %d", order.TotalAmount),
+		"currency":          "IDR",
+		"paid_at":           time.Now().Format(time.RFC3339),
+		"payment_reference": order.MidtransOrderID,
+		"payment_method":    "Midtrans",
+		"items_table":       invoiceItemsTextLocale(ctx, db, order.ID, fallbackString(user.Language, "en")),
+		"items_table_en":    invoiceItemsTextLocale(ctx, db, order.ID, "en"),
+		"items_table_id":    invoiceItemsTextLocale(ctx, db, order.ID, "id"),
+		"site_name":         "Prometheus Academy",
+		"document_number":   fmt.Sprintf("INV-%06d", order.ID),
+		"recipient_name":    fallbackString(user.Name, "Customer"),
+		"recipient_email":   user.Email,
+		"issued_at":         time.Now().Format("2006-01-02"),
+		"locale":            fallbackString(user.Language, "en"),
+	}
+	rawSnapshot, snapshotChecksum := checksumJSON(snapshot)
 
 	invoice = models.Invoice{
-		OrderID:       order.ID,
-		InvoiceNumber: fmt.Sprintf("INV-%06d", order.ID),
-		FilePath:      fmt.Sprintf("/uploads/invoices/invoice-%d.pdf", order.ID),
-		IssuedAt:      time.Now(),
-	}
-	if err := writeSimpleInvoicePDF(StorageFilePath(cfg, invoice.FilePath), invoice, order); err != nil {
-		return models.Invoice{}, err
+		OrderID:           order.ID,
+		InvoiceNumber:     fmt.Sprintf("INV-%06d", order.ID),
+		FilePath:          fmt.Sprintf("/uploads/invoices/invoice-%d.pdf", order.ID),
+		IssuedAt:          time.Now(),
+		TemplateID:        version.TemplateID,
+		TemplateVersionID: version.ID,
+		Locale:            fallbackString(user.Language, "en"),
+		SnapshotJSON:      rawSnapshot,
+		SnapshotChecksum:  snapshotChecksum,
 	}
 	if err := db.WithContext(ctx).Create(&invoice).Error; err != nil {
 		return models.Invoice{}, err
 	}
 	return invoice, nil
+}
+
+func EnsureInvoicePDF(ctx context.Context, db *gorm.DB, cfg config.Config, invoice models.Invoice) ([]byte, error) {
+	var version models.DocumentTemplateVersion
+	if invoice.TemplateVersionID == 0 {
+		_, fallbackVersion, err := SelectDocumentTemplateVersion(ctx, db, "invoice", 0)
+		if err != nil {
+			return nil, err
+		}
+		version = fallbackVersion
+	} else if err := db.WithContext(ctx).First(&version, invoice.TemplateVersionID).Error; err != nil {
+		return nil, err
+	}
+	var variables map[string]string
+	if err := json.Unmarshal([]byte(invoice.SnapshotJSON), &variables); err != nil {
+		var generic map[string]any
+		_ = json.Unmarshal([]byte(invoice.SnapshotJSON), &generic)
+		variables = mapStringAny(generic)
+	}
+	if len(variables) == 0 {
+		variables = invoiceFallbackVariables(ctx, db, invoice)
+	}
+	for key, value := range invoiceFallbackVariables(ctx, db, invoice) {
+		if strings.TrimSpace(variables[key]) == "" {
+			variables[key] = value
+		}
+	}
+	if regexp.MustCompile(`(?i)\b(course|product|course_addon|addon)\s+#\d+`).MatchString(variables["items_table"]) {
+		variables["items_table"] = invoiceItemsTextLocale(ctx, db, invoice.OrderID, invoice.Locale)
+	}
+	if invoice.Locale == "id" {
+		variables["items_table"] = fallbackString(variables["items_table_id"], invoiceItemsTextLocale(ctx, db, invoice.OrderID, "id"))
+	} else {
+		variables["items_table"] = fallbackString(variables["items_table_en"], invoiceItemsTextLocale(ctx, db, invoice.OrderID, "en"))
+	}
+	template := version.HTMLEn
+	if invoice.Locale == "id" && strings.TrimSpace(version.HTMLID) != "" {
+		template = version.HTMLID
+	}
+	pdf, err := RenderDocumentPDF(ctx, cfg, template, variables, "portrait")
+	if err != nil {
+		return nil, err
+	}
+	if cacheDays := DocumentPDFCacheDays(ctx, db); cacheDays > 0 {
+		key := fmt.Sprintf("generated/invoices/%d/%d-%s.pdf", invoice.ID, version.ID, invoice.SnapshotChecksum)
+		_ = StoreGeneratedPDF(ctx, db, cfg, key, pdf, invoice.FilePath, cacheDays)
+		expires := time.Now().Add(time.Duration(cacheDays) * 24 * time.Hour)
+		_ = db.WithContext(ctx).Model(&invoice).Updates(map[string]any{"cached_object_key": key, "cache_expires_at": &expires}).Error
+	}
+	return pdf, nil
+}
+
+func invoiceFallbackVariables(ctx context.Context, db *gorm.DB, invoice models.Invoice) map[string]string {
+	var order models.Order
+	var user models.User
+	_ = db.WithContext(ctx).First(&order, invoice.OrderID).Error
+	_ = db.WithContext(ctx).First(&user, order.UserID).Error
+	paidAt := invoice.IssuedAt
+	if paidAt.IsZero() {
+		paidAt = time.Now()
+	}
+	invoiceNumber := strings.TrimSpace(invoice.InvoiceNumber)
+	if invoiceNumber == "" {
+		invoiceNumber = fmt.Sprintf("INV-%06d", invoice.OrderID)
+	}
+	return map[string]string{
+		"site_name":         "Prometheus Academy",
+		"document_number":   invoiceNumber,
+		"recipient_name":    fallbackString(user.Name, "Customer"),
+		"recipient_email":   user.Email,
+		"issued_at":         paidAt.Format("2006-01-02"),
+		"locale":            fallbackString(user.Language, "en"),
+		"verification_url":  "",
+		"qr_verification":   "",
+		"invoice_number":    invoiceNumber,
+		"customer_name":     fallbackString(user.Name, "Customer"),
+		"customer_email":    user.Email,
+		"items_table":       invoiceItemsTextLocale(ctx, db, invoice.OrderID, fallbackString(user.Language, "en")),
+		"items_table_en":    invoiceItemsTextLocale(ctx, db, invoice.OrderID, "en"),
+		"items_table_id":    invoiceItemsTextLocale(ctx, db, invoice.OrderID, "id"),
+		"subtotal":          formatIDR(order.TotalAmount),
+		"discount":          "Rp 0",
+		"total":             formatIDR(order.TotalAmount),
+		"currency":          "IDR",
+		"paid_at":           paidAt.Format("2006-01-02"),
+		"payment_reference": order.MidtransOrderID,
+		"payment_method":    "Midtrans",
+	}
+}
+
+func invoiceItemsText(ctx context.Context, db *gorm.DB, orderID uint) string {
+	return invoiceItemsTextLocale(ctx, db, orderID, "en")
+}
+
+func invoiceItemsTextLocale(ctx context.Context, db *gorm.DB, orderID uint, locale string) string {
+	var items []models.OrderItem
+	if err := db.WithContext(ctx).Where("order_id = ?", orderID).Find(&items).Error; err != nil {
+		return "-"
+	}
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		lines = append(lines, fmt.Sprintf("%s - %s", invoiceItemTitle(ctx, db, item, locale), formatIDR(item.Price)))
+	}
+	if len(lines) == 0 {
+		return "-"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func invoiceItemTitle(ctx context.Context, db *gorm.DB, item models.OrderItem, locale string) string {
+	switch strings.ToLower(strings.TrimSpace(item.ItemType)) {
+	case "course":
+		var course models.Course
+		if err := db.WithContext(ctx).Select("title_en", "title_id").First(&course, item.ItemID).Error; err == nil {
+			if locale == "id" {
+				return fallbackString(course.TitleID, course.TitleEn)
+			}
+			return fallbackString(course.TitleEn, course.TitleID)
+		}
+	case "product":
+		var product models.Product
+		if err := db.WithContext(ctx).Select("title_en", "title_id").First(&product, item.ItemID).Error; err == nil {
+			if locale == "id" {
+				return fallbackString(product.TitleID, product.TitleEn)
+			}
+			return fallbackString(product.TitleEn, product.TitleID)
+		}
+	case "course_addon", "addon":
+		var addon models.CourseAddon
+		if err := db.WithContext(ctx).First(&addon, item.ItemID).Error; err == nil {
+			if locale == "id" {
+				return fallbackString(addon.TitleID, addon.TitleEn)
+			}
+			return fallbackString(addon.TitleEn, addon.TitleID)
+		}
+	}
+	return "Prometheus Academy item"
+}
+
+func formatIDR(amount int) string {
+	raw := strconv.Itoa(amount)
+	if raw == "" {
+		return "Rp 0"
+	}
+	var parts []string
+	for len(raw) > 3 {
+		parts = append([]string{raw[len(raw)-3:]}, parts...)
+		raw = raw[:len(raw)-3]
+	}
+	parts = append([]string{raw}, parts...)
+	return "Rp " + strings.Join(parts, ".")
+}
+
+func mapStringAny(input map[string]any) map[string]string {
+	out := map[string]string{}
+	for key, value := range input {
+		out[key] = fmt.Sprint(value)
+	}
+	return out
 }
 
 func writeSimpleInvoicePDF(path string, invoice models.Invoice, order models.Order) error {

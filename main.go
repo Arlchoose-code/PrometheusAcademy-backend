@@ -58,6 +58,7 @@ func main() {
 		}()
 		go services.StartEmailCampaignWorker(ctx, db)
 		go services.StartAutomationWorker(ctx, db)
+		go services.StartStorageMigrationWorker(ctx, db, cfg)
 	}
 
 	router := gin.New()

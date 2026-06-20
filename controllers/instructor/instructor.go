@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"academyprometheus/backend/config"
 	publiccontroller "academyprometheus/backend/controllers/public"
 	"academyprometheus/backend/models"
 	"academyprometheus/backend/services"
@@ -20,13 +21,14 @@ import (
 )
 
 type Controller struct {
+	cfg                  config.Config
 	db                   *gorm.DB
 	communicationService *services.CommunicationService
 	uploadService        *services.UploadService
 }
 
-func NewController(db *gorm.DB, uploadService *services.UploadService) *Controller {
-	return &Controller{db: db, communicationService: services.NewCommunicationService(db), uploadService: uploadService}
+func NewController(db *gorm.DB, cfg config.Config, uploadService *services.UploadService) *Controller {
+	return &Controller{cfg: cfg, db: db, communicationService: services.NewCommunicationService(db), uploadService: uploadService}
 }
 
 func (h *Controller) GetOverview(c *gin.Context) {
@@ -222,13 +224,17 @@ func (h *Controller) DeleteMedia(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result := h.db.WithContext(c.Request.Context()).Where("id = ? AND uploaded_by = ?", id, user.ID).Delete(&models.MediaFile{})
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete media"})
+	var media models.MediaFile
+	if err := h.db.WithContext(c.Request.Context()).Where("id = ? AND uploaded_by = ?", id, user.ID).First(&media).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Media not found"})
 		return
 	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Media not found"})
+	if err := services.DeleteStoredPublicPath(c.Request.Context(), h.db, h.cfg, media.FilePath); err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete stored media: " + err.Error()})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Delete(&media).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete media"})
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Media deleted"})

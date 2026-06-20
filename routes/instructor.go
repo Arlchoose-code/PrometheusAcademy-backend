@@ -12,7 +12,7 @@ import (
 
 func RegisterInstructorRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Config) {
 	uploadService := services.NewUploadService(db, cfg)
-	controller := instructorcontroller.NewController(db, uploadService)
+	controller := instructorcontroller.NewController(db, cfg, uploadService)
 	instructor := router.Group("/instructor")
 	instructor.Use(middlewares.AuthGuard(db, cfg), middlewares.RoleGuard("instructor"))
 

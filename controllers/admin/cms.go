@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"academyprometheus/backend/models"
+	"academyprometheus/backend/services"
 	"academyprometheus/backend/structs"
 
 	"github.com/gin-gonic/gin"
@@ -375,6 +376,10 @@ func (h *Controller) DeleteMedia(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load media"})
+		return
+	}
+	if err := services.DeleteStoredPublicPath(c.Request.Context(), h.db, h.cfg, media.FilePath); err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete stored media: " + err.Error()})
 		return
 	}
 	if err := h.db.WithContext(c.Request.Context()).Delete(&media).Error; err != nil {

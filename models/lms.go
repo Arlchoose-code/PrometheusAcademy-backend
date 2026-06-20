@@ -132,6 +132,7 @@ type Certificate struct {
 	UserID            uint       `gorm:"not null;index" json:"user_id"`
 	CourseID          uint       `gorm:"not null;index" json:"course_id"`
 	UUID              string     `gorm:"size:36;uniqueIndex" json:"uuid"`
+	CertificateCode   *string    `gorm:"size:12;uniqueIndex" json:"certificate_code,omitempty"`
 	IssuedAt          time.Time  `gorm:"not null" json:"issued_at"`
 	CertificateURL    string     `gorm:"size:255;not null" json:"certificate_url"`
 	TemplateID        uint       `gorm:"index" json:"template_id"`

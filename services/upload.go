@@ -28,11 +28,12 @@ type UploadService struct {
 }
 
 func NewUploadService(db *gorm.DB, cfg config.Config) *UploadService {
-	storage, err := NewObjectStorage(context.Background(), cfg)
+	storage, effectiveCfg, err := NewConfiguredObjectStorage(context.Background(), db, cfg)
 	if err != nil {
 		storage = &LocalStorage{Root: cfg.StoragePath}
+		effectiveCfg = cfg
 	}
-	return &UploadService{db: db, cfg: cfg, storage: storage}
+	return &UploadService{db: db, cfg: effectiveCfg, storage: storage}
 }
 
 func (s *UploadService) SaveUserAvatar(ctx context.Context, userID uint, file *multipart.FileHeader) (string, error) {
@@ -112,6 +113,9 @@ func (s *UploadService) SaveMediaFile(ctx context.Context, userID uint, file *mu
 	if err := s.db.WithContext(ctx).Create(&media).Error; err != nil {
 		return models.MediaFile{}, fmt.Errorf("create media file: %w", err)
 	}
+	_ = s.db.WithContext(ctx).Model(&models.StoredObject{}).
+		Where("legacy_path = ?", path).
+		Updates(map[string]any{"owner_id": userID, "owner_scope": ownerScopeForUser(ctx, s.db, userID), "object_class": "media"}).Error
 
 	return media, nil
 }
@@ -140,12 +144,16 @@ func (s *UploadService) saveRawFile(file *multipart.FileHeader, relativeDir, pre
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	filename := fmt.Sprintf("%s-%d%s", prefix, time.Now().UnixNano(), ext)
 	key := filepath.ToSlash(filepath.Join(relativeDir, filename))
-	if _, err := s.storage.Put(context.Background(), PutObjectInput{Key: key, Body: source, ContentType: file.Header.Get("Content-Type")}); err != nil {
+	storage, effectiveCfg := s.storageForWrite(context.Background())
+	stored, err := storage.Put(context.Background(), PutObjectInput{Key: key, Body: source, ContentType: file.Header.Get("Content-Type")})
+	if err != nil {
 		return "", "", fmt.Errorf("store upload: %w", err)
 	}
 
 	publicPath := "/" + filepath.ToSlash(filepath.Join(relativeDir, filename))
-	return strings.ReplaceAll(publicPath, "\\", "/"), file.Filename, nil
+	publicPath = strings.ReplaceAll(publicPath, "\\", "/")
+	RegisterStoredObject(context.Background(), s.db, effectiveCfg, stored, publicPath, file.Filename, file.Header.Get("Content-Type"), visibilityForDir(relativeDir), "admin", objectClassForDir(relativeDir), 0, nil)
+	return publicPath, file.Filename, nil
 }
 
 func (s *UploadService) saveWebP(file *multipart.FileHeader, relativeDir, prefix string) (string, error) {
@@ -218,12 +226,67 @@ func (s *UploadService) saveWebP(file *multipart.FileHeader, relativeDir, prefix
 	}
 	defer converted.Close()
 	key := filepath.ToSlash(filepath.Join(relativeDir, filename))
-	if _, err := s.storage.Put(context.Background(), PutObjectInput{Key: key, Body: converted, ContentType: "image/webp", CacheControl: "public, max-age=31536000, immutable"}); err != nil {
+	storage, effectiveCfg := s.storageForWrite(context.Background())
+	stored, err := storage.Put(context.Background(), PutObjectInput{Key: key, Body: converted, ContentType: "image/webp", CacheControl: "public, max-age=31536000, immutable"})
+	if err != nil {
 		return "", fmt.Errorf("store webp: %w", err)
 	}
 
 	publicPath := "/" + filepath.ToSlash(filepath.Join(relativeDir, filename))
-	return strings.ReplaceAll(publicPath, "\\", "/"), nil
+	publicPath = strings.ReplaceAll(publicPath, "\\", "/")
+	RegisterStoredObject(context.Background(), s.db, effectiveCfg, stored, publicPath, file.Filename, "image/webp", "public", "admin", objectClassForDir(relativeDir), 0, nil)
+	return publicPath, nil
+}
+
+func (s *UploadService) storageForWrite(ctx context.Context) (ObjectStorage, config.Config) {
+	storage, effectiveCfg, err := NewConfiguredObjectStorage(ctx, s.db, s.cfg)
+	if err != nil {
+		return s.storage, s.cfg
+	}
+	return storage, effectiveCfg
+}
+
+func visibilityForDir(relativeDir string) string {
+	dir := filepath.ToSlash(relativeDir)
+	if strings.Contains(dir, "product-files") || strings.Contains(dir, "course-files") || strings.Contains(dir, "course-addons") || strings.Contains(dir, "talent-cv") || strings.Contains(dir, "invoices") || strings.Contains(dir, "certificates") {
+		return "protected"
+	}
+	return "public"
+}
+
+func objectClassForDir(relativeDir string) string {
+	dir := filepath.ToSlash(relativeDir)
+	switch {
+	case strings.Contains(dir, "product-files"):
+		return "product_file"
+	case strings.Contains(dir, "course-files"):
+		return "course_material"
+	case strings.Contains(dir, "course-addons"):
+		return "course_addon"
+	case strings.Contains(dir, "talent-cv"):
+		return "talent_cv"
+	case strings.Contains(dir, "media"):
+		return "media"
+	default:
+		return "public"
+	}
+}
+
+func ownerScopeForUser(ctx context.Context, db *gorm.DB, userID uint) string {
+	if db == nil || userID == 0 {
+		return "admin"
+	}
+	var user models.User
+	if err := db.WithContext(ctx).Select("id", "is_admin", "is_instructor").First(&user, userID).Error; err != nil {
+		return "user"
+	}
+	if user.IsAdmin {
+		return "admin"
+	}
+	if user.IsInstructor {
+		return "instructor"
+	}
+	return "user"
 }
 
 func convertToWebP(cwebpBin, sourcePath, targetPath string) error {

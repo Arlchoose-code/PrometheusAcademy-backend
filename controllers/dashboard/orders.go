@@ -2,8 +2,10 @@ package dashboard
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"academyprometheus/backend/models"
@@ -117,9 +119,18 @@ func (h *Controller) GetOrderInvoice(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load invoice"})
 		return
 	}
+	renderLocale := strings.ToLower(strings.TrimSpace(c.Query("locale")))
+	if renderLocale == "en" || renderLocale == "id" {
+		invoice.Locale = renderLocale
+	}
+	pdf, err := services.EnsureInvoicePDF(c.Request.Context(), h.db, h.cfg, invoice)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to render invoice"})
+		return
+	}
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s.pdf"`, invoice.InvoiceNumber))
-	c.File(services.StorageFilePath(h.cfg, invoice.FilePath))
+	_, _ = c.Writer.Write(pdf)
 }
 
 func (h *Controller) DownloadProductFile(c *gin.Context) {
@@ -146,5 +157,14 @@ func (h *Controller) DownloadProductFile(c *gin.Context) {
 	_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventMaterialDownloaded, "product_file", file.ID, services.XPMaterialDownloaded, "Downloaded a learning material", "Download materi belajar")
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.FileName))
-	c.File(services.StorageFilePath(h.cfg, file.FilePath))
+	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, file.FilePath)
+	if err != nil {
+		c.File(services.StorageFilePath(h.cfg, file.FilePath))
+		return
+	}
+	defer reader.Close()
+	if info.ContentType != "" {
+		c.Header("Content-Type", info.ContentType)
+	}
+	_, _ = io.Copy(c.Writer, reader)
 }

@@ -46,6 +46,12 @@ func Seed(db *gorm.DB) error {
 	if err := seedCMS(ctx, db); err != nil {
 		return err
 	}
+	if _, _, err := services.EnsureDefaultDocumentTemplate(ctx, db, "invoice", admin.ID); err != nil {
+		return fmt.Errorf("seed invoice document template: %w", err)
+	}
+	if _, _, err := services.EnsureDefaultDocumentTemplate(ctx, db, "certificate", admin.ID); err != nil {
+		return fmt.Errorf("seed certificate document template: %w", err)
+	}
 	if err := seedTalentAndPartners(ctx, db); err != nil {
 		return err
 	}
