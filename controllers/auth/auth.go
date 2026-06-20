@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -32,17 +33,17 @@ func NewController(db *gorm.DB, cfg config.Config, uploadService *services.Uploa
 func (h *Controller) CreateUser(c *gin.Context) {
 	var req structs.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid registration data"})
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Code: "invalid_registration_data", Message: "Please provide a valid name, email, and password of at least 8 characters"})
 		return
 	}
 
 	_, tokens, challenge, err := h.authService.Register(c.Request.Context(), req)
 	if err != nil {
-		if !strings.Contains(err.Error(), "already registered") && !strings.Contains(err.Error(), "registration") {
-			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
+		if errors.Is(err, services.ErrEmailAlreadyRegistered) {
+			c.JSON(http.StatusConflict, structs.Response{Success: false, Code: "email_already_registered", Message: "This email is already registered"})
 			return
 		}
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Code: "registration_failed", Message: "Registration could not be completed"})
 		return
 	}
 	if challenge != nil && challenge.RequiresOTP {
@@ -63,17 +64,17 @@ func (h *Controller) CreateUser(c *gin.Context) {
 func (h *Controller) Login(c *gin.Context) {
 	var req structs.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid login data"})
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Code: "invalid_login_data", Message: "Please provide a valid email and password"})
 		return
 	}
 
 	user, tokens, challenge, err := h.authService.Login(c.Request.Context(), req)
 	if err != nil {
-		if err.Error() != "invalid credentials" {
-			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to send verification code"})
+		if errors.Is(err, services.ErrInvalidCredentials) {
+			c.JSON(http.StatusUnauthorized, structs.Response{Success: false, Code: "invalid_credentials", Message: "Invalid email or password"})
 			return
 		}
-		c.JSON(http.StatusUnauthorized, structs.Response{Success: false, Message: "Invalid credentials"})
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Code: "otp_delivery_failed", Message: "Failed to send verification code"})
 		return
 	}
 	if challenge != nil && challenge.RequiresOTP {
@@ -94,12 +95,16 @@ func (h *Controller) Login(c *gin.Context) {
 func (h *Controller) VerifyAuthOTP(c *gin.Context) {
 	var req structs.VerifyAuthOTPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid verification code"})
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Code: "invalid_otp_data", Message: "Enter the 6-digit verification code"})
 		return
 	}
 	user, tokens, err := h.authService.VerifyAuthOTP(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		if errors.Is(err, services.ErrInvalidOrExpiredOTP) {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Code: "invalid_or_expired_otp", Message: "Invalid or expired verification code"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Code: "otp_verification_failed", Message: "Verification could not be completed"})
 		return
 	}
 	http.SetCookie(c.Writer, services.AccessTokenCookie(tokens.AccessToken, tokens.AccessExpiresAt, h.secureCookie))
@@ -110,12 +115,16 @@ func (h *Controller) VerifyAuthOTP(c *gin.Context) {
 func (h *Controller) ResendAuthOTP(c *gin.Context) {
 	var req structs.ResendAuthOTPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid OTP request"})
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Code: "invalid_otp_request", Message: "Invalid verification request"})
 		return
 	}
 	challenge, err := h.authService.ResendAuthOTP(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		if errors.Is(err, services.ErrEmailAlreadyVerified) {
+			c.JSON(http.StatusConflict, structs.Response{Success: false, Code: "email_already_verified", Message: "This email is already verified. Please log in."})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Code: "otp_delivery_failed", Message: "Failed to send verification code"})
 		return
 	}
 	c.JSON(http.StatusAccepted, structs.Response{Success: true, Message: challenge.Message, Data: structs.AuthChallengeResponse{

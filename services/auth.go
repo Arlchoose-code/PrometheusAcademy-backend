@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -29,6 +31,13 @@ const (
 	passwordResetTTL = 30 * time.Minute
 	authOTPTTL       = 10 * time.Minute
 	loginOTPInterval = 30 * 24 * time.Hour
+)
+
+var (
+	ErrEmailAlreadyRegistered = errors.New("email is already registered")
+	ErrInvalidCredentials     = errors.New("invalid credentials")
+	ErrInvalidOrExpiredOTP    = errors.New("invalid or expired code")
+	ErrEmailAlreadyVerified   = errors.New("email is already verified")
 )
 
 type TokenClaims struct {
@@ -70,7 +79,7 @@ func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest)
 	var existing models.User
 	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&existing).Error; err == nil {
 		if existing.EmailVerifiedAt != nil {
-			return models.User{}, TokenPair{}, nil, errors.New("email is already registered")
+			return models.User{}, TokenPair{}, nil, ErrEmailAlreadyRegistered
 		}
 		hash, err := HashPassword(req.Password)
 		if err != nil {
@@ -125,10 +134,10 @@ func (s *AuthService) Login(ctx context.Context, req structs.LoginRequest) (mode
 
 	var user models.User
 	if err := s.db.WithContext(ctx).Where("email = ?", strings.ToLower(strings.TrimSpace(req.Email))).First(&user).Error; err != nil {
-		return models.User{}, TokenPair{}, nil, errors.New("invalid credentials")
+		return models.User{}, TokenPair{}, nil, ErrInvalidCredentials
 	}
 	if err := CheckPassword(req.Password, user.Password); err != nil {
-		return models.User{}, TokenPair{}, nil, errors.New("invalid credentials")
+		return models.User{}, TokenPair{}, nil, ErrInvalidCredentials
 	}
 	if user.EmailVerifiedAt == nil {
 		challenge, err := s.sendAuthOTP(ctx, user, "register")
@@ -265,15 +274,31 @@ func (s *AuthService) VerifyAuthOTP(ctx context.Context, req structs.VerifyAuthO
 	purpose := strings.ToLower(strings.TrimSpace(req.Purpose))
 	var user models.User
 	if err := s.db.WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
-		return models.User{}, TokenPair{}, errors.New("invalid or expired code")
+		return models.User{}, TokenPair{}, ErrInvalidOrExpiredOTP
 	}
 	var otp models.AuthEmailOTP
-	hash := authOTPHash(email, purpose, req.Code)
 	if err := s.db.WithContext(ctx).
-		Where("email = ? AND purpose = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ?", email, purpose, hash, time.Now()).
+		Where("email = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?", email, purpose, time.Now()).
 		Order("id DESC").
 		First(&otp).Error; err != nil {
-		return models.User{}, TokenPair{}, errors.New("invalid or expired code")
+		return models.User{}, TokenPair{}, ErrInvalidOrExpiredOTP
+	}
+	expectedHash := authOTPHash(s.cfg.AuthOTPSecret, email, purpose, req.Code)
+	if subtle.ConstantTimeCompare([]byte(otp.CodeHash), []byte(expectedHash)) != 1 {
+		attempts := otp.Attempts + 1
+		maxAttempts := s.cfg.AuthOTPMaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 5
+		}
+		updates := map[string]any{"attempts": attempts}
+		if attempts >= maxAttempts {
+			now := time.Now()
+			updates["used_at"] = &now
+		}
+		if err := s.db.WithContext(ctx).Model(&otp).Updates(updates).Error; err != nil {
+			return models.User{}, TokenPair{}, fmt.Errorf("record auth otp attempt: %w", err)
+		}
+		return models.User{}, TokenPair{}, ErrInvalidOrExpiredOTP
 	}
 	now := time.Now()
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -325,7 +350,7 @@ func (s *AuthService) ResendAuthOTP(ctx context.Context, req structs.ResendAuthO
 		return &AuthOTPChallenge{RequiresOTP: true, Purpose: purpose, Email: email, Message: "If the account exists, a verification code has been sent."}, nil
 	}
 	if purpose == "register" && user.EmailVerifiedAt != nil {
-		return nil, errors.New("email is already verified")
+		return nil, ErrEmailAlreadyVerified
 	}
 	return s.sendAuthOTP(ctx, user, purpose)
 }
@@ -353,7 +378,7 @@ func (s *AuthService) sendAuthOTP(ctx context.Context, user models.User, purpose
 		UserID:    user.ID,
 		Email:     strings.ToLower(strings.TrimSpace(user.Email)),
 		Purpose:   purpose,
-		CodeHash:  authOTPHash(user.Email, purpose, code),
+		CodeHash:  authOTPHash(s.cfg.AuthOTPSecret, user.Email, purpose, code),
 		ExpiresAt: time.Now().Add(authOTPTTL),
 	}
 	if err := s.db.WithContext(ctx).Create(&otp).Error; err != nil {
@@ -548,10 +573,11 @@ func randomOTPCode() (string, error) {
 	return fmt.Sprintf("%06d", value.Int64()), nil
 }
 
-func authOTPHash(email string, purpose string, code string) string {
+func authOTPHash(secret string, email string, purpose string, code string) string {
 	normalized := strings.ToLower(strings.TrimSpace(email)) + "|" + strings.ToLower(strings.TrimSpace(purpose)) + "|" + strings.TrimSpace(code)
-	sum := sha256.Sum256([]byte(normalized))
-	return hex.EncodeToString(sum[:])
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(normalized))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func localizedFrontendURL(cfg config.Config, language string, path string) string {

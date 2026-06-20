@@ -119,6 +119,7 @@ func seedSettings(ctx context.Context, db *gorm.DB) error {
 		"home_support_stat":                 "7/24",
 		"monthly_enrollment_limit":          "100",
 		"monthly_enrollment_banner_enabled": "true",
+		"talent_review_invite_hours":        "168",
 		"mailer_provider":                   "gohighlevel",
 		"mailer_from_email":                 "hello@academyprometheus.com",
 		"mailer_from_name":                  "Prometheus Academy",

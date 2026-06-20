@@ -77,6 +77,7 @@ func RateLimit(limit int) gin.HandlerFunc {
 		if current.count > limit {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"success": false,
+				"code":    "rate_limited",
 				"message": "Too many requests",
 			})
 			return

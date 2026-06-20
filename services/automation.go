@@ -116,7 +116,7 @@ func EvaluateAutomations(ctx context.Context, db *gorm.DB) error {
 			if err := db.WithContext(ctx).Where("users.updated_at <= ?", cutoff).
 				Where("NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = users.id AND o.updated_at > ?)", cutoff).
 				Where("NOT EXISTS (SELECT 1 FROM course_enrollments ce WHERE ce.user_id = users.id AND ce.updated_at > ?)", cutoff).
-				Where("NOT EXISTS (SELECT 1 FROM topic_progress tp WHERE tp.user_id = users.id AND tp.updated_at > ?)", cutoff).
+				Where("NOT EXISTS (SELECT 1 FROM topic_progresses tp WHERE tp.user_id = users.id AND tp.updated_at > ?)", cutoff).
 				Limit(500).Find(&users).Error; err == nil {
 				for _, user := range users {
 					scheduleAutomationRun(db, workflow, user, "reengagement", user.ID, cutoff, map[string]string{"courses_url": localizedFrontendURL(cfg, user.Language, "/courses")})
@@ -145,7 +145,9 @@ func EvaluateAutomations(ctx context.Context, db *gorm.DB) error {
 				UpdatedAt    time.Time
 			}
 			cutoff := time.Now().Add(-time.Duration(workflow.DelayMinutes) * time.Minute)
-			_ = db.WithContext(ctx).Raw(`SELECT ce.id enrollment_id, ce.user_id, c.title_en course_name, c.slug course_slug, GREATEST(ce.updated_at, COALESCE(MAX(tp.updated_at), ce.updated_at)) updated_at FROM course_enrollments ce JOIN courses c ON c.id=ce.course_id LEFT JOIN course_modules cm ON cm.course_id=ce.course_id LEFT JOIN topics t ON t.module_id=cm.id LEFT JOIN topic_progress tp ON tp.topic_id=t.id AND tp.user_id=ce.user_id WHERE ce.completed_at IS NULL GROUP BY ce.id,ce.user_id,c.title_en,c.slug,ce.updated_at HAVING updated_at <= ? LIMIT 500`, cutoff).Scan(&rows).Error
+			if err := db.WithContext(ctx).Raw(`SELECT ce.id enrollment_id, ce.user_id, c.title_en course_name, c.slug course_slug, GREATEST(ce.updated_at, COALESCE(MAX(tp.updated_at), ce.updated_at)) updated_at FROM course_enrollments ce JOIN courses c ON c.id=ce.course_id LEFT JOIN course_modules cm ON cm.course_id=ce.course_id LEFT JOIN topics t ON t.module_id=cm.id LEFT JOIN topic_progresses tp ON tp.topic_id=t.id AND tp.user_id=ce.user_id WHERE ce.completed_at IS NULL GROUP BY ce.id,ce.user_id,c.title_en,c.slug,ce.updated_at HAVING updated_at <= ? LIMIT 500`, cutoff).Scan(&rows).Error; err != nil {
+				return err
+			}
 			for _, row := range rows {
 				var user models.User
 				if db.First(&user, row.UserID).Error == nil {

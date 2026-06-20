@@ -2,6 +2,7 @@ package structs
 
 type Response struct {
 	Success bool        `json:"success"`
+	Code    string      `json:"code,omitempty"`
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
 	Meta    *Meta       `json:"meta,omitempty"`

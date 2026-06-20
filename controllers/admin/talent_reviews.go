@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,7 +65,14 @@ func (h *Controller) sendTalentReviewInvitation(ctx context.Context, application
 	if err != nil {
 		return models.TalentReviewInvitation{}, errors.New("Failed to generate review invitation")
 	}
-	expiresAt := time.Now().Add(time.Duration(h.cfg.TalentReviewInviteHours) * time.Hour)
+	inviteHours := 168
+	var inviteSetting models.Setting
+	if err := h.db.WithContext(ctx).Where("`key` = ?", "talent_review_invite_hours").First(&inviteSetting).Error; err == nil {
+		if configuredHours, parseErr := strconv.Atoi(strings.TrimSpace(inviteSetting.Value)); parseErr == nil && configuredHours > 0 {
+			inviteHours = configuredHours
+		}
+	}
+	expiresAt := time.Now().Add(time.Duration(inviteHours) * time.Hour)
 	invitation.ApplicationType = applicationType
 	invitation.ApplicationID = applicationID
 	invitation.Name = recipient.Name

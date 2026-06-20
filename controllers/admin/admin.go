@@ -47,7 +47,7 @@ func (h *Controller) GetOverview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count revenue"})
 		return
 	}
-	if err := h.db.WithContext(ctx).Model(&models.Course{}).Where("status = ?", "published").Count(&activeCourses).Error; err != nil {
+	if err := h.db.WithContext(ctx).Model(&models.Course{}).Where("status = ?", "open").Count(&activeCourses).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count courses"})
 		return
 	}
@@ -501,6 +501,13 @@ func (h *Controller) UpdateSettings(c *gin.Context) {
 		if key == "monthly_enrollment_banner_enabled" && value != "true" && value != "false" {
 			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Enrollment banner enabled must be true or false"})
 			return
+		}
+		if key == "talent_review_invite_hours" {
+			hours, err := strconv.Atoi(value)
+			if err != nil || hours < 1 || hours > 8760 {
+				c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Talent review invitation lifetime must be between 1 and 8,760 hours"})
+				return
+			}
 		}
 		setting := models.Setting{Key: key, Value: value}
 		if err := h.db.WithContext(c.Request.Context()).Where(models.Setting{Key: key}).Assign(setting).FirstOrCreate(&setting).Error; err != nil {

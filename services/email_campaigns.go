@@ -210,11 +210,12 @@ func ProcessNextQueuedEmailCampaign(ctx context.Context, db *gorm.DB) error {
 		return nil
 	}
 	var campaign models.EmailCampaign
-	if err := db.WithContext(ctx).Where("status = ?", "queued").Order("queued_at asc, id asc").First(&campaign).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil
-		}
-		return err
+	result := db.WithContext(ctx).Where("status = ?", "queued").Order("queued_at asc, id asc").Limit(1).Find(&campaign)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil
 	}
 	now := time.Now()
 	if err := db.WithContext(ctx).Model(&campaign).Updates(map[string]any{

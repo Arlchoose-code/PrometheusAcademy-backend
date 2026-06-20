@@ -26,6 +26,7 @@ type AuthEmailOTP struct {
 	Email     string     `gorm:"size:191;not null;index" json:"email"`
 	Purpose   string     `gorm:"size:30;not null;index" json:"purpose"`
 	CodeHash  string     `gorm:"size:191;not null;index" json:"-"`
+	Attempts  int        `gorm:"not null;default:0" json:"-"`
 	ExpiresAt time.Time  `gorm:"not null;index" json:"expires_at"`
 	UsedAt    *time.Time `json:"used_at"`
 }
