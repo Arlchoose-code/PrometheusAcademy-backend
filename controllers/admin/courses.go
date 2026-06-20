@@ -686,6 +686,7 @@ func (h *Controller) UpdateCourseDripSchedules(c *gin.Context) {
 
 func (h *Controller) saveCourse(c *gin.Context, creating bool) {
 	var req models.Course
+	var previous models.Course
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid course payload"})
 		return
@@ -699,6 +700,10 @@ func (h *Controller) saveCourse(c *gin.Context, creating bool) {
 		}
 		ignoreID = uint(id)
 		req.ID = uint(id)
+		if err := h.db.WithContext(c.Request.Context()).First(&previous, uint(id)).Error; err != nil {
+			c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Course not found"})
+			return
+		}
 	}
 	if strings.TrimSpace(req.Slug) == "" {
 		slug, err := services.UniqueSlug(c.Request.Context(), h.db, "courses", req.TitleEn, ignoreID)
@@ -727,6 +732,9 @@ func (h *Controller) saveCourse(c *gin.Context, creating bool) {
 	} else if err := h.db.WithContext(c.Request.Context()).Model(&models.Course{}).Where("id = ?", req.ID).Select("*").Omit("id", "created_at").Updates(req).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save course"})
 		return
+	}
+	if (creating && req.Status == "open") || (!creating && previous.Status != "open" && req.Status == "open") {
+		services.QueuePublishAnnouncement(c.Request.Context(), h.db, "course_published", req.ID, req.TitleEn)
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Course saved", Data: req})
 }

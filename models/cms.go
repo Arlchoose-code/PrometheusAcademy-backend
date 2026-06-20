@@ -165,3 +165,14 @@ type EmailCampaign struct {
 	StartedAt          *time.Time `json:"started_at"`
 	FinishedAt         *time.Time `json:"finished_at"`
 }
+
+type MailerSender struct {
+	BaseModel
+	Provider       string `gorm:"size:40;not null;default:'all';index" json:"provider"`
+	Name           string `gorm:"size:191;not null" json:"name"`
+	Email          string `gorm:"size:191;not null;uniqueIndex" json:"email"`
+	IsDefault      bool   `gorm:"not null;default:false;index" json:"is_default"`
+	Status         string `gorm:"size:40;not null;default:'local'" json:"status"`
+	ExternalID     string `gorm:"size:191" json:"external_id"`
+	ExternalStatus string `gorm:"size:80" json:"external_status"`
+}

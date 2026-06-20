@@ -23,6 +23,7 @@ const (
 	EmailTemplateBookingConfirmation  = "email_template_booking_confirmation"
 	EmailTemplateCampaignNewsletter   = "email_template_campaign_newsletter"
 	EmailTemplateCampaignAnnouncement = "email_template_campaign_announcement"
+	EmailTemplateCampaignDefault      = "email_template_campaign_default_wrapper"
 	EmailTemplateTalentReviewInvite   = "email_template_talent_review_invitation"
 )
 
@@ -46,6 +47,7 @@ func TransactionalTemplateMappings() []TransactionalTemplateMapping {
 		{Key: EmailTemplateBookingConfirmation, Label: "Booking confirmation", DefaultKey: "booking_confirmation", Description: "Sent after consultation booking is confirmed."},
 		{Key: EmailTemplateCampaignNewsletter, Label: "Campaign newsletter", DefaultKey: "campaign_newsletter", Description: "Default newsletter campaign template."},
 		{Key: EmailTemplateCampaignAnnouncement, Label: "Campaign announcement", DefaultKey: "campaign_announcement", Description: "Default announcement campaign template."},
+		{Key: EmailTemplateCampaignDefault, Label: "Default simple campaign wrapper", DefaultKey: "campaign_simple", Description: "Editable wrapper used when Campaign Composer uses Default simple email."},
 		{Key: EmailTemplateTalentReviewInvite, Label: "Talent review invitation", DefaultKey: "talent_review_invitation", Description: "Sent when an eligible Talent Bridge applicant is invited to leave a review."},
 	}
 }

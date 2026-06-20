@@ -121,6 +121,9 @@ func (h *Controller) CreateProduct(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create product"})
 		return
 	}
+	if product.IsPublished {
+		services.QueuePublishAnnouncement(c.Request.Context(), h.db, "product_published", product.ID, product.TitleEn)
+	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Product created", Data: product})
 }
 
@@ -128,6 +131,11 @@ func (h *Controller) UpdateProduct(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid product id"})
+		return
+	}
+	var previous models.Product
+	if err := h.db.WithContext(c.Request.Context()).First(&previous, uint(id)).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Product not found"})
 		return
 	}
 	var product models.Product
@@ -154,6 +162,9 @@ func (h *Controller) UpdateProduct(c *gin.Context) {
 		return
 	}
 	product.ID = uint(id)
+	if !previous.IsPublished && product.IsPublished {
+		services.QueuePublishAnnouncement(c.Request.Context(), h.db, "product_published", product.ID, product.TitleEn)
+	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Product saved", Data: product})
 }
 
@@ -239,6 +250,10 @@ func (h *Controller) ListTransactions(c *gin.Context) {
 		UserEmail       string    `json:"user_email"`
 		Item            string    `json:"item"`
 		ItemType        string    `json:"item_type"`
+		ItemCount       int       `json:"item_count"`
+		CourseCount     int       `json:"course_count"`
+		ProductCount    int       `json:"product_count"`
+		PaymentType     string    `json:"payment_type"`
 		Amount          int       `json:"amount"`
 		Status          string    `json:"status"`
 		MidtransOrderID string    `json:"midtrans_order_id"`
@@ -247,13 +262,37 @@ func (h *Controller) ListTransactions(c *gin.Context) {
 	var rows []row
 	if err := h.db.WithContext(c.Request.Context()).Raw(`
 			SELECT o.id, o.id AS order_id, u.name AS user_name, u.email AS user_email,
-				COALESCE(c.title_en, p.title_en, o.midtrans_order_id) AS item,
-				oi.item_type, o.total_amount AS amount, o.status, o.midtrans_order_id, o.created_at
+				COALESCE(
+					GROUP_CONCAT(
+						CASE
+							WHEN oi.item_type = 'course' THEN c.title_en
+							WHEN oi.item_type = 'product' THEN p.title_en
+							ELSE NULL
+						END
+						ORDER BY oi.id SEPARATOR ' • '
+					),
+					o.midtrans_order_id
+				) AS item,
+				CASE
+					WHEN COUNT(DISTINCT oi.item_type) > 1 THEN 'mixed'
+					ELSE COALESCE(MAX(oi.item_type), 'unknown')
+				END AS item_type,
+				COUNT(DISTINCT oi.id) AS item_count,
+				COUNT(DISTINCT CASE WHEN oi.item_type = 'course' THEN oi.id END) AS course_count,
+				COUNT(DISTINCT CASE WHEN oi.item_type = 'product' THEN oi.id END) AS product_count,
+				COALESCE(MAX(t.payment_type), '') AS payment_type,
+				o.total_amount AS amount, o.status, o.midtrans_order_id, o.created_at
 			FROM orders o
 			JOIN users u ON u.id = o.user_id
 			LEFT JOIN order_items oi ON oi.order_id = o.id
 			LEFT JOIN courses c ON oi.item_type = 'course' AND c.id = oi.item_id
 			LEFT JOIN products p ON oi.item_type = 'product' AND p.id = oi.item_id
+			LEFT JOIN (
+				SELECT order_id, MAX(payment_type) AS payment_type
+				FROM transactions
+				GROUP BY order_id
+			) t ON t.order_id = o.id
+			GROUP BY o.id, u.name, u.email, o.total_amount, o.status, o.midtrans_order_id, o.created_at
 			ORDER BY o.created_at DESC
 			LIMIT 100
 		`).Scan(&rows).Error; err != nil {

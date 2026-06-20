@@ -186,8 +186,10 @@ type MailerTestRequest struct {
 }
 
 type MailerSenderRequest struct {
-	Name  string `json:"name" binding:"required"`
-	Email string `json:"email" binding:"required,email"`
+	Name      string `json:"name" binding:"required"`
+	Email     string `json:"email" binding:"required,email"`
+	Provider  string `json:"provider"`
+	IsDefault bool   `json:"is_default"`
 }
 
 type MailerBroadcastRequest struct {
@@ -204,10 +206,10 @@ type MailerCampaignRequest struct {
 	Name               string `json:"name"`
 	Target             string `json:"target" binding:"required"`
 	UserIDs            []uint `json:"user_ids"`
-	Subject            string `json:"subject" binding:"required"`
+	Subject            string `json:"subject"`
 	SubjectEn          string `json:"subject_en"`
 	SubjectID          string `json:"subject_id"`
-	HTML               string `json:"html" binding:"required"`
+	HTML               string `json:"html"`
 	HTMLEn             string `json:"html_en"`
 	HTMLID             string `json:"html_id"`
 	Text               string `json:"text"`

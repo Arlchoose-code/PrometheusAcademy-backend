@@ -431,6 +431,11 @@ func (h *Controller) ListSettings(c *gin.Context) {
 	}
 	settings := map[string]string{}
 	for _, row := range rows {
+		if row.Key == "ghl_access_token" || row.Key == "brevo_api_key" {
+			settings[row.Key] = ""
+			settings[row.Key+"_configured"] = strconv.FormatBool(strings.TrimSpace(row.Value) != "")
+			continue
+		}
 		settings[row.Key] = row.Value
 	}
 	limit, _ := strconv.Atoi(settings["monthly_enrollment_limit"])
@@ -460,6 +465,13 @@ func (h *Controller) UpdateSettings(c *gin.Context) {
 		value = strings.TrimSpace(value)
 		if key == "" {
 			continue
+		}
+		if (key == "ghl_access_token" || key == "brevo_api_key") && value == "" {
+			continue
+		}
+		if key == "mailer_provider" && value != "gohighlevel" && value != "brevo" {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Mailer provider must be gohighlevel or brevo"})
+			return
 		}
 		if key == "phone" && !services.ValidPhone(value, false) {
 			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid phone number"})
@@ -720,6 +732,42 @@ func (h *Controller) UpdateEmailTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Email template saved", Data: template})
 }
 
+func (h *Controller) DeleteEmailTemplate(c *gin.Context) {
+	key := strings.TrimSpace(c.Param("key"))
+	if key == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid email template key"})
+		return
+	}
+	builtIn := map[string]bool{
+		"campaign_simple": true, "campaign_newsletter": true, "campaign_announcement": true,
+		"welcome": true, "email_verification": true, "login_notification": true, "otp_login": true,
+		"password_reset": true, "invoice": true, "payment_success": true, "deposit_confirmation": true,
+		"certificate": true, "booking_confirmation": true, "talent_review_invitation": true,
+	}
+	if builtIn[key] || strings.HasPrefix(key, "automation_") {
+		c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "Built-in templates cannot be deleted. You can edit them or assign a different template."})
+		return
+	}
+	var template models.EmailTemplate
+	if err := h.db.WithContext(c.Request.Context()).Where("`key` = ?", key).First(&template).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Email template not found"})
+		return
+	}
+	var settingRefs, workflowRefs, activeCampaignRefs int64
+	h.db.WithContext(c.Request.Context()).Model(&models.Setting{}).Where("value = ? AND `key` LIKE ?", key, "email_template_%").Count(&settingRefs)
+	h.db.WithContext(c.Request.Context()).Model(&models.AutomationWorkflow{}).Where("template_key = ?", key).Count(&workflowRefs)
+	h.db.WithContext(c.Request.Context()).Model(&models.EmailCampaign{}).Where("template_key = ? AND status IN ?", key, []string{"draft", "queued", "processing"}).Count(&activeCampaignRefs)
+	if settingRefs+workflowRefs+activeCampaignRefs > 0 {
+		c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "This template is still assigned to a system email, automation, or active campaign. Change that assignment first."})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Delete(&template).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete email template"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Email template deleted"})
+}
+
 func (h *Controller) TestMailer(c *gin.Context) {
 	var req structs.MailerTestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -787,6 +835,15 @@ func (h *Controller) ListMailerAudienceUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count users"})
 		return
 	}
+	if c.Query("ids_only") == "1" {
+		var ids []uint
+		if err := db.Order("created_at desc").Pluck("id", &ids).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load user IDs"})
+			return
+		}
+		c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Mailer user IDs loaded", Data: gin.H{"ids": ids, "total": total}})
+		return
+	}
 	var rows []row
 	if err := db.Order("created_at desc").Limit(perPage).Offset((page - 1) * perPage).Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load users"})
@@ -804,12 +861,28 @@ func (h *Controller) ListMailerAudienceUsers(c *gin.Context) {
 }
 
 func (h *Controller) ListMailerCampaigns(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "12"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 12
+	}
+	var total int64
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.EmailCampaign{}).Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count campaigns"})
+		return
+	}
 	var campaigns []models.EmailCampaign
-	if err := h.db.WithContext(c.Request.Context()).Order("created_at desc").Limit(50).Find(&campaigns).Error; err != nil {
+	if err := h.db.WithContext(c.Request.Context()).Order("created_at desc").Limit(perPage).Offset((page - 1) * perPage).Find(&campaigns).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load campaigns"})
 		return
 	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Email campaigns loaded", Data: campaigns})
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Email campaigns loaded", Data: gin.H{
+		"items":      campaigns,
+		"pagination": gin.H{"page": page, "per_page": perPage, "total": total, "total_pages": (total + int64(perPage) - 1) / int64(perPage)},
+	}})
 }
 
 func (h *Controller) QueueMailerCampaign(c *gin.Context) {
@@ -829,6 +902,28 @@ func (h *Controller) QueueMailerCampaign(c *gin.Context) {
 func (h *Controller) upsertMailerCampaign(c *gin.Context, req structs.MailerCampaignRequest, status string) (models.EmailCampaign, error) {
 	subjectEn := strings.TrimSpace(req.SubjectEn)
 	subjectID := strings.TrimSpace(req.SubjectID)
+	htmlEn := req.HTMLEn
+	htmlID := req.HTMLID
+	textEn := req.TextEn
+	textID := req.TextID
+	if templateKey := strings.TrimSpace(req.TemplateKey); templateKey != "" {
+		var template models.EmailTemplate
+		if err := h.db.WithContext(c.Request.Context()).Where("`key` = ?", templateKey).First(&template).Error; err != nil {
+			return models.EmailCampaign{}, errors.New("Selected email template was not found")
+		}
+		subjectEn = template.SubjectEn
+		subjectID = template.SubjectID
+		if strings.TrimSpace(subjectID) == "" {
+			subjectID = template.SubjectEn
+		}
+		htmlEn = template.BodyEn
+		htmlID = template.BodyID
+		if strings.TrimSpace(htmlID) == "" {
+			htmlID = template.BodyEn
+		}
+		textEn = ""
+		textID = ""
+	}
 	if subjectEn == "" {
 		subjectEn = strings.TrimSpace(req.Subject)
 	}
@@ -838,8 +933,6 @@ func (h *Controller) upsertMailerCampaign(c *gin.Context, req structs.MailerCamp
 	if subjectEn == "" {
 		subjectEn = subjectID
 	}
-	htmlEn := req.HTMLEn
-	htmlID := req.HTMLID
 	if strings.TrimSpace(htmlEn) == "" {
 		htmlEn = req.HTML
 	}
@@ -849,13 +942,23 @@ func (h *Controller) upsertMailerCampaign(c *gin.Context, req structs.MailerCamp
 	if strings.TrimSpace(htmlEn) == "" {
 		htmlEn = htmlID
 	}
-	textEn := req.TextEn
-	textID := req.TextID
 	if strings.TrimSpace(textEn) == "" {
 		textEn = req.Text
 	}
 	if strings.TrimSpace(textID) == "" {
 		textID = textEn
+	}
+	if strings.TrimSpace(req.TemplateKey) != "" && (strings.TrimSpace(subjectEn) == "" || strings.TrimSpace(htmlEn) == "") {
+		var template models.EmailTemplate
+		if err := h.db.WithContext(c.Request.Context()).Where("`key` = ?", strings.TrimSpace(req.TemplateKey)).First(&template).Error; err != nil {
+			return models.EmailCampaign{}, errors.New("Email template not found")
+		}
+		subjectEn = firstNonEmpty(subjectEn, template.SubjectEn, template.SubjectID, template.Key)
+		subjectID = firstNonEmpty(subjectID, template.SubjectID, template.SubjectEn, subjectEn)
+		htmlEn = firstNonEmpty(htmlEn, template.BodyEn, template.BodyID)
+		htmlID = firstNonEmpty(htmlID, template.BodyID, template.BodyEn, htmlEn)
+		textEn = firstNonEmpty(textEn, stripHTMLForEmailLocal(htmlEn))
+		textID = firstNonEmpty(textID, stripHTMLForEmailLocal(htmlID), textEn)
 	}
 	if strings.TrimSpace(subjectEn) == "" && strings.TrimSpace(subjectID) == "" {
 		return models.EmailCampaign{}, errors.New("Subject is required")
@@ -915,11 +1018,32 @@ func (h *Controller) ListMailerSenders(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load mailer settings"})
 		return
 	}
-	items := []gin.H{}
-	if strings.TrimSpace(settings.FromEmail) != "" {
-		items = append(items, gin.H{"id": 1, "name": settings.FromName, "email": settings.FromEmail, "active": true})
+	activeProvider := strings.ToLower(settings.Provider)
+	if activeProvider == "brevo" && strings.TrimSpace(settings.BrevoAPIKey) != "" {
+		if brevoSenders, err := services.ListBrevoSenders(c.Request.Context(), settings); err == nil {
+			for _, item := range brevoSenders {
+				sender := models.MailerSender{
+					Provider:       "brevo",
+					Name:           fallbackString(item.Name, item.Email),
+					Email:          item.Email,
+					Status:         "synced",
+					ExternalID:     item.ID,
+					ExternalStatus: item.Status,
+				}
+				_ = h.db.WithContext(c.Request.Context()).Where("email = ?", sender.Email).Assign(sender).FirstOrCreate(&sender).Error
+			}
+		}
 	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "GoHighLevel sender loaded", Data: items})
+	if strings.TrimSpace(settings.FromEmail) != "" {
+		sender := models.MailerSender{Provider: activeProvider, Name: settings.FromName, Email: strings.ToLower(settings.FromEmail), IsDefault: true, Status: "local", ExternalStatus: "default"}
+		_ = h.db.WithContext(c.Request.Context()).Where("email = ?", sender.Email).Attrs(sender).FirstOrCreate(&sender).Error
+	}
+	var rows []models.MailerSender
+	if err := h.db.WithContext(c.Request.Context()).Where("provider IN ?", []string{"all", activeProvider}).Order("is_default desc, name asc").Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load sender identities"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Sender identities loaded", Data: rows})
 }
 
 func (h *Controller) SaveMailerSender(c *gin.Context) {
@@ -928,19 +1052,63 @@ func (h *Controller) SaveMailerSender(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid sender payload"})
 		return
 	}
-	updates := map[string]string{"mailer_from_name": strings.TrimSpace(req.Name), "mailer_from_email": strings.ToLower(strings.TrimSpace(req.Email))}
-	for key, value := range updates {
-		setting := models.Setting{Key: key}
-		if err := h.db.WithContext(c.Request.Context()).Where(models.Setting{Key: key}).Assign(models.Setting{Value: value}).FirstOrCreate(&setting).Error; err != nil {
+	settings, _ := services.LoadMailerSettings(c.Request.Context(), h.db)
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" {
+		provider = strings.ToLower(settings.Provider)
+	}
+	if provider != "brevo" && provider != "gohighlevel" && provider != "all" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Sender provider must be all, brevo, or gohighlevel"})
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	sender := models.MailerSender{Provider: provider, Name: strings.TrimSpace(req.Name), Email: email, IsDefault: req.IsDefault, Status: "local"}
+	if provider == "brevo" && strings.EqualFold(settings.Provider, "brevo") {
+		if externalID, externalStatus, err := services.CreateBrevoSender(c.Request.Context(), settings, sender.Name, sender.Email); err == nil {
+			sender.ExternalID = strings.TrimSpace(externalID)
+			sender.ExternalStatus = externalStatus
+			sender.Status = "synced"
+		}
+	}
+	if sender.IsDefault {
+		if err := h.db.WithContext(c.Request.Context()).Model(&models.MailerSender{}).Where("provider IN ?", []string{"all", provider}).Update("is_default", false).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update default sender"})
+			return
+		}
+		for key, value := range map[string]string{"mailer_from_name": sender.Name, "mailer_from_email": sender.Email} {
+			setting := models.Setting{Key: key}
+			if err := h.db.WithContext(c.Request.Context()).Where(models.Setting{Key: key}).Assign(models.Setting{Value: value}).FirstOrCreate(&setting).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save sender"})
+				return
+			}
+		}
+	}
+	id, _ := strconv.Atoi(c.Param("id"))
+	query := h.db.WithContext(c.Request.Context())
+	if id > 0 {
+		if err := query.Model(&models.MailerSender{}).Where("id = ?", uint(id)).Updates(sender).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save sender"})
 			return
 		}
+		_ = query.First(&sender, uint(id)).Error
+	} else if err := query.Where("email = ?", sender.Email).Assign(sender).FirstOrCreate(&sender).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save sender"})
+		return
 	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "GoHighLevel sender selection saved", Data: gin.H{"id": 1, "name": req.Name, "email": req.Email, "active": true}})
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Sender identity saved", Data: sender})
 }
 
 func (h *Controller) DeleteMailerSender(c *gin.Context) {
-	c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Remove or verify sender identities in the GoHighLevel portal"})
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid sender id"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Delete(&models.MailerSender{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete sender"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Sender identity deleted"})
 }
 
 func defaultSEOMetaRows() []models.SEOMeta {
@@ -955,4 +1123,40 @@ func defaultSEOMetaRows() []models.SEOMeta {
 		{PageSlug: "talent-bridge", TitleEn: "Talent Bridge", TitleID: "Jembatan Talenta", DescriptionEn: "Managed staffing services connecting Asia-based talent with European companies.", DescriptionID: "Layanan staffing terkelola yang menghubungkan talenta Asia dengan perusahaan Eropa."},
 		{PageSlug: "terms", TitleEn: "Terms of Service", TitleID: "Syarat Layanan", DescriptionEn: "Terms for using Prometheus Academy services, courses, and digital products.", DescriptionID: "Syarat penggunaan layanan, kursus, dan produk digital Prometheus Academy."},
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func fallbackString(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func stripHTMLForEmailLocal(value string) string {
+	var builder strings.Builder
+	inTag := false
+	for _, char := range value {
+		switch char {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+			builder.WriteRune(' ')
+		default:
+			if !inTag {
+				builder.WriteRune(char)
+			}
+		}
+	}
+	return strings.Join(strings.Fields(builder.String()), " ")
 }

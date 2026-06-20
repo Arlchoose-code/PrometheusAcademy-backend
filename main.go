@@ -36,6 +36,8 @@ func main() {
 		log.Fatal().Err(err).Msg("database seed failed")
 	} else if err := services.ReconcileCouponUsageCounts(context.Background(), db); err != nil {
 		log.Fatal().Err(err).Msg("coupon usage reconciliation failed")
+	} else if err := services.EnsureDefaultAutomationWorkflows(context.Background(), db); err != nil {
+		log.Fatal().Err(err).Msg("automation workflow seed failed")
 	}
 	if db != nil {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -55,6 +57,7 @@ func main() {
 			}
 		}()
 		go services.StartEmailCampaignWorker(ctx, db)
+		go services.StartAutomationWorker(ctx, db)
 	}
 
 	router := gin.New()

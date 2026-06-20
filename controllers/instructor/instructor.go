@@ -190,6 +190,49 @@ func (h *Controller) UpdateCourseThumbnail(c *gin.Context) {
 	h.updateOwnedUpload(c, h.uploadService.SaveCourseThumbnail, &models.Course{}, course.ID, "thumbnail", "Course thumbnail uploaded")
 }
 
+func (h *Controller) ListMedia(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	var rows []models.MediaFile
+	if err := h.db.WithContext(c.Request.Context()).Where("uploaded_by = ?", user.ID).Order("created_at desc").Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load media"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Media files loaded", Data: rows})
+}
+
+func (h *Controller) CreateMedia(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Media file is required"})
+		return
+	}
+	media, err := h.uploadService.SaveMediaFile(c.Request.Context(), user.ID, file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Media uploaded", Data: media})
+}
+
+func (h *Controller) DeleteMedia(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	id, ok := paramID(c, "id")
+	if !ok {
+		return
+	}
+	result := h.db.WithContext(c.Request.Context()).Where("id = ? AND uploaded_by = ?", id, user.ID).Delete(&models.MediaFile{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete media"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Media not found"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Media deleted"})
+}
+
 func (h *Controller) ListConsultationSlots(c *gin.Context) {
 	user := c.MustGet("user").(models.User)
 	ownerID := user.ID

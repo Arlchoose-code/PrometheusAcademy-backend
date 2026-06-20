@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -320,7 +321,19 @@ func (h *Controller) UpdateBannerImage(c *gin.Context) {
 }
 
 func (h *Controller) ListMedia(c *gin.Context) {
-	listRows[models.MediaFile](h.db, "created_at desc", "Media files loaded")(c)
+	user := c.MustGet("user").(models.User)
+	var rows []models.MediaFile
+	query := h.db.WithContext(c.Request.Context()).Model(&models.MediaFile{}).Order("media_files.created_at desc")
+	if user.IsAdmin {
+		query = query.Joins("LEFT JOIN users ON users.id = media_files.uploaded_by").Where("media_files.uploaded_by = 0 OR users.is_admin = ?", true)
+	} else {
+		query = query.Where("uploaded_by = ?", user.ID)
+	}
+	if err := query.Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load media"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Media files loaded", Data: rows})
 }
 
 func (h *Controller) CreateMedia(c *gin.Context) {
@@ -343,7 +356,32 @@ func (h *Controller) CreateMedia(c *gin.Context) {
 }
 
 func (h *Controller) DeleteMedia(c *gin.Context) {
-	deleteRow[models.MediaFile](h.db, "Media deleted")(c)
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid media ID"})
+		return
+	}
+	user := c.MustGet("user").(models.User)
+	var media models.MediaFile
+	query := h.db.WithContext(c.Request.Context()).Model(&models.MediaFile{}).Where("media_files.id = ?", id)
+	if user.IsAdmin {
+		query = query.Joins("LEFT JOIN users ON users.id = media_files.uploaded_by").Where("media_files.uploaded_by = 0 OR users.is_admin = ?", true)
+	} else {
+		query = query.Where("uploaded_by = ?", user.ID)
+	}
+	if err := query.First(&media).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Media not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load media"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Delete(&media).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete media"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Media deleted"})
 }
 
 func listRows[T any](db *gorm.DB, order string, message string) gin.HandlerFunc {

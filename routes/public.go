@@ -30,6 +30,7 @@ func RegisterPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Confi
 	router.GET("/products", publicController.ListProducts)
 	router.GET("/products/:slug", publicController.GetProduct)
 	router.POST("/payments/midtrans/webhook", publicController.HandleMidtransWebhook)
+	router.POST("/webhooks/email-events", publicController.HandleEmailEventWebhook)
 
 	registerTalentPublicRoutes(router, db, cfg, uploadService)
 }

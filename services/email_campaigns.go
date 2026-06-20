@@ -95,6 +95,10 @@ func ResolveCampaignRecipients(ctx context.Context, db *gorm.DB, target string, 
 		if email == "" || seen[email] {
 			continue
 		}
+		var suppression models.EmailSuppression
+		if db.WithContext(ctx).Where("email = ?", email).First(&suppression).Error == nil {
+			continue
+		}
 		seen[email] = true
 		recipient.Email = email
 		recipient.Language = normalizeMailerLocale(recipient.Language)
@@ -146,8 +150,17 @@ func RenderCampaignTemplateHTML(template models.EmailTemplate, locale string, su
 }
 
 func replaceMailerLayoutTokens(value string, replacements map[string]string) string {
-	for token, replacement := range replacements {
-		value = strings.NewReplacer("{{"+token+"}}", replacement, "{"+token+"}", replacement).Replace(value)
+	// A replacement such as {content} may itself contain recipient/action tokens.
+	// Run a few bounded passes so nested tokens render deterministically regardless
+	// of Go map iteration order, while avoiding an unbounded replacement loop.
+	for pass := 0; pass < 4; pass++ {
+		previous := value
+		for token, replacement := range replacements {
+			value = strings.NewReplacer("{{"+token+"}}", replacement, "{"+token+"}", replacement).Replace(value)
+		}
+		if value == previous {
+			break
+		}
 	}
 	return value
 }
@@ -229,13 +242,24 @@ func ProcessNextQueuedEmailCampaign(ctx context.Context, db *gorm.DB) error {
 	}
 	settings = SenderSettings(settings, campaign.SenderName, campaign.SenderEmail)
 	template := models.EmailTemplate{}
-	hasTemplate := false
+	usesCustomTemplate := false
 	if strings.TrimSpace(campaign.TemplateKey) != "" {
 		if err := db.WithContext(ctx).Where("`key` = ?", strings.TrimSpace(campaign.TemplateKey)).First(&template).Error; err != nil {
 			return finishCampaign(ctx, db, &campaign, "failed", len(recipients), []MailerFailure{{Email: "-", Error: "Email template not found: " + campaign.TemplateKey}}, 0)
 		}
-		hasTemplate = true
+		usesCustomTemplate = true
 		settings = SenderSettings(settings, template.SenderName, template.SenderEmail)
+	} else {
+		wrapperKey := "campaign_simple"
+		var wrapperSetting models.Setting
+		if err := db.WithContext(ctx).Where("`key` = ?", EmailTemplateCampaignDefault).First(&wrapperSetting).Error; err == nil && strings.TrimSpace(wrapperSetting.Value) != "" {
+			wrapperKey = strings.TrimSpace(wrapperSetting.Value)
+		}
+		if err := db.WithContext(ctx).Where("`key` = ?", wrapperKey).First(&template).Error; err != nil {
+			template = models.EmailTemplate{}
+		} else {
+			settings = SenderSettings(settings, template.SenderName, template.SenderEmail)
+		}
 	}
 	rateLimit := campaign.RateLimitPerMinute
 	if rateLimit <= 0 {
@@ -255,7 +279,11 @@ func ProcessNextQueuedEmailCampaign(ctx context.Context, db *gorm.DB) error {
 		body := localizedCampaignHTML(campaign, recipient.Language)
 		text := localizedCampaignText(campaign, recipient.Language)
 		html := body
-		if hasTemplate {
+		if usesCustomTemplate {
+			html = replaceMailerLayoutTokens(html, map[string]string{"content": "", "footer": settings.FromName + " - Europe x Asia learning bridge.", "site_name": settings.FromName, "subject": subject})
+			text = stripHTMLForEmail(html)
+		} else {
+			// Default campaigns inject rich-editor content into the neutral responsive wrapper.
 			html = RenderCampaignTemplateHTML(template, recipient.Language, subject, body, settings)
 		}
 		_, err := SendMailerEmail(ctx, settings, MailMessage{

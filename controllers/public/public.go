@@ -126,12 +126,14 @@ func (h *Controller) CreateNewsletterSubscription(c *gin.Context) {
 	}
 	mailerSettings, err := services.LoadMailerSettings(c.Request.Context(), h.db)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Subscription saved, but GoHighLevel settings could not be loaded"})
+		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Subscription saved, but email provider settings could not be loaded"})
 		return
 	}
-	if _, err := services.SyncGHLContact(c.Request.Context(), mailerSettings, fullName, email, []string{mailerSettings.NewsletterTag}); err != nil {
-		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Subscription saved, but GoHighLevel contact sync failed"})
-		return
+	if strings.EqualFold(mailerSettings.Provider, "gohighlevel") {
+		if _, err := services.SyncGHLContact(c.Request.Context(), mailerSettings, fullName, email, []string{mailerSettings.NewsletterTag}); err != nil {
+			c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Subscription saved, but GoHighLevel contact sync failed"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Newsletter subscription saved", Data: subscriber})
@@ -167,12 +169,14 @@ func (h *Controller) CreateContactLead(c *gin.Context) {
 	}
 	mailerSettings, err := services.LoadMailerSettings(c.Request.Context(), h.db)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Contact saved, but GoHighLevel settings could not be loaded"})
+		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Contact saved, but email provider settings could not be loaded"})
 		return
 	}
-	if _, err := services.SyncGHLContact(c.Request.Context(), mailerSettings, lead.Name, lead.Email, []string{mailerSettings.ContactLeadTag}); err != nil {
-		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Contact saved, but GoHighLevel contact sync failed"})
-		return
+	if strings.EqualFold(mailerSettings.Provider, "gohighlevel") {
+		if _, err := services.SyncGHLContact(c.Request.Context(), mailerSettings, lead.Name, lead.Email, []string{mailerSettings.ContactLeadTag}); err != nil {
+			c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: "Contact saved, but GoHighLevel contact sync failed"})
+			return
+		}
 	}
 	_ = h.notifyAdminsAboutContactLead(c.Request.Context(), lead)
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Contact message saved", Data: lead})
