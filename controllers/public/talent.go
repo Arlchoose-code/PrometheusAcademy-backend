@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"academyprometheus/backend/models"
+	"academyprometheus/backend/services"
 	"academyprometheus/backend/structs"
 
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,10 @@ func (h *Controller) CreateHiringInquiry(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit hiring inquiry"})
 		return
 	}
+	h.sendTalentConfirmation(c, services.EmailTemplateHiringInquiry, "hiring_inquiry_received", req.FirstName+" "+req.LastName, req.WorkEmail, map[string]string{
+		"company_name": req.CompanyName,
+		"roles_needed": req.RolesNeeded,
+	})
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Hiring inquiry submitted", Data: req})
 }
 
@@ -119,6 +124,9 @@ func (h *Controller) CreateTalentPlusApplication(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit Talent Bridge+ application"})
 		return
 	}
+	h.sendTalentConfirmation(c, services.EmailTemplateTalentApplication, "talent_application_received", req.FirstName+" "+req.LastName, req.Email, map[string]string{
+		"application_type": "Talent Bridge+",
+	})
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge+ application submitted", Data: req})
 }
 
@@ -162,6 +170,9 @@ func (h *Controller) CreatePartnerApplication(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit partner application"})
 		return
 	}
+	h.sendTalentConfirmation(c, services.EmailTemplatePartnerApplication, "partner_application_received", req.ContactPerson, req.Email, map[string]string{
+		"university_name": req.UniversityName,
+	})
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Partner application submitted", Data: req})
 }
 
@@ -226,7 +237,40 @@ func (h *Controller) CreateTalentJobApplication(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit application"})
 		return
 	}
+	h.sendTalentConfirmation(c, services.EmailTemplateTalentApplication, "talent_application_received", application.Name, application.Email, map[string]string{
+		"application_type": job.TitleEn,
+	})
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Application submitted", Data: application})
+}
+
+func (h *Controller) sendTalentConfirmation(c *gin.Context, settingKey string, fallbackKey string, name string, email string, variables map[string]string) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return
+	}
+	locale := "en"
+	var user models.User
+	if err := h.db.WithContext(c.Request.Context()).Where("LOWER(email) = ?", email).First(&user).Error; err == nil {
+		if user.Language == "id" {
+			locale = "id"
+		}
+		if strings.TrimSpace(name) == "" {
+			name = user.Name
+		}
+	}
+	if strings.TrimSpace(name) == "" {
+		name = email
+	}
+	baseURL := strings.TrimRight(h.cfg.FrontendURL, "/")
+	values := map[string]string{
+		"dashboard_url": baseURL + "/" + locale + "/dashboard",
+		"login_url":     baseURL + "/" + locale + "/login",
+		"register_url":  baseURL + "/" + locale + "/register",
+	}
+	for key, value := range variables {
+		values[key] = value
+	}
+	_ = services.SendTransactionalTemplateEmail(c.Request.Context(), h.db, settingKey, fallbackKey, models.User{Name: strings.TrimSpace(name), Email: email, Language: locale}, values)
 }
 
 func validPhone(value string, required bool) bool {

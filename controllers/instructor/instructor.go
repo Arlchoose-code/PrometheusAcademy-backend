@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	publiccontroller "academyprometheus/backend/controllers/public"
 	"academyprometheus/backend/models"
@@ -914,6 +915,159 @@ func (h *Controller) UpdateCourseAddonFile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Add-on file uploaded", Data: gin.H{"file_path": path, "file_name": originalName, "file_type": file.Header.Get("Content-Type")}})
+}
+
+func (h *Controller) ListReviewQueue(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	ctx := c.Request.Context()
+
+	var assignments []models.AssignmentSubmission
+	if err := h.db.WithContext(ctx).
+		Table("assignment_submissions").
+		Select("assignment_submissions.*").
+		Joins("JOIN assignments ON assignments.id = assignment_submissions.assignment_id").
+		Joins("JOIN topics ON topics.id = assignments.topic_id").
+		Joins("JOIN course_modules ON course_modules.id = topics.module_id").
+		Joins("JOIN courses ON courses.id = course_modules.course_id").
+		Where("courses.instructor_id = ?", user.ID).
+		Order("assignment_submissions.submitted_at desc, assignment_submissions.id desc").
+		Limit(80).
+		Find(&assignments).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load assignment submissions"})
+		return
+	}
+
+	var quizzes []models.QuizSubmission
+	if err := h.db.WithContext(ctx).
+		Table("quiz_submissions").
+		Select("quiz_submissions.*").
+		Joins("JOIN quizzes ON quizzes.id = quiz_submissions.quiz_id").
+		Joins("JOIN course_modules ON course_modules.id = quizzes.module_id").
+		Joins("JOIN courses ON courses.id = course_modules.course_id").
+		Where("courses.instructor_id = ? AND quiz_submissions.manual_review = ? AND quiz_submissions.reviewed_at IS NULL", user.ID, true).
+		Order("quiz_submissions.submitted_at desc, quiz_submissions.id desc").
+		Limit(80).
+		Find(&quizzes).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load quiz submissions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Review queue loaded", Data: gin.H{
+		"assignments": h.assignmentReviewItems(ctx, assignments),
+		"quizzes":     h.quizReviewItems(ctx, quizzes),
+	}})
+}
+
+func (h *Controller) ReviewAssignmentSubmission(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	id, ok := paramID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Score    int    `json:"score"`
+		Feedback string `json:"feedback"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid assignment review payload"})
+		return
+	}
+	if req.Score < 0 {
+		req.Score = 0
+	}
+	if req.Score > 100 {
+		req.Score = 100
+	}
+	var submission models.AssignmentSubmission
+	if err := h.db.WithContext(c.Request.Context()).
+		Table("assignment_submissions").
+		Select("assignment_submissions.*").
+		Joins("JOIN assignments ON assignments.id = assignment_submissions.assignment_id").
+		Joins("JOIN topics ON topics.id = assignments.topic_id").
+		Joins("JOIN course_modules ON course_modules.id = topics.module_id").
+		Joins("JOIN courses ON courses.id = course_modules.course_id").
+		Where("assignment_submissions.id = ? AND courses.instructor_id = ?", id, user.ID).
+		First(&submission).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Assignment submission not found"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Model(&submission).Updates(map[string]any{"score": req.Score, "feedback": strings.TrimSpace(req.Feedback)}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save assignment review"})
+		return
+	}
+	submission.Score = req.Score
+	submission.Feedback = strings.TrimSpace(req.Feedback)
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Assignment submission reviewed", Data: submission})
+}
+
+func (h *Controller) ReviewQuizSubmission(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	id, ok := paramID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Score    int    `json:"score"`
+		Passed   bool   `json:"passed"`
+		Feedback string `json:"feedback"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid quiz review payload"})
+		return
+	}
+	if req.Score < 0 {
+		req.Score = 0
+	}
+	if req.Score > 100 {
+		req.Score = 100
+	}
+	var submission models.QuizSubmission
+	if err := h.db.WithContext(c.Request.Context()).
+		Table("quiz_submissions").
+		Select("quiz_submissions.*").
+		Joins("JOIN quizzes ON quizzes.id = quiz_submissions.quiz_id").
+		Joins("JOIN course_modules ON course_modules.id = quizzes.module_id").
+		Joins("JOIN courses ON courses.id = course_modules.course_id").
+		Where("quiz_submissions.id = ? AND courses.instructor_id = ?", id, user.ID).
+		First(&submission).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Quiz submission not found"})
+		return
+	}
+	now := time.Now()
+	if err := h.db.WithContext(c.Request.Context()).Model(&submission).Updates(map[string]any{"score": req.Score, "passed": req.Passed, "feedback": strings.TrimSpace(req.Feedback), "reviewed_at": &now, "reviewed_by": user.ID}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save quiz review"})
+		return
+	}
+	submission.Score = req.Score
+	submission.Passed = req.Passed
+	submission.Feedback = strings.TrimSpace(req.Feedback)
+	submission.ReviewedAt = &now
+	submission.ReviewedBy = user.ID
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Quiz submission reviewed", Data: submission})
+}
+
+func (h *Controller) assignmentReviewItems(ctx context.Context, rows []models.AssignmentSubmission) []gin.H {
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		var student models.User
+		_ = h.db.WithContext(ctx).First(&student, row.UserID).Error
+		var assignment models.Assignment
+		_ = h.db.WithContext(ctx).First(&assignment, row.AssignmentID).Error
+		items = append(items, gin.H{"id": row.ID, "assignment_id": row.AssignmentID, "student_name": student.Name, "student_email": student.Email, "title_en": assignment.TitleEn, "title_id": assignment.TitleID, "file_path": row.FilePath, "score": row.Score, "feedback": row.Feedback, "submitted_at": row.SubmittedAt})
+	}
+	return items
+}
+
+func (h *Controller) quizReviewItems(ctx context.Context, rows []models.QuizSubmission) []gin.H {
+	items := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		var student models.User
+		_ = h.db.WithContext(ctx).First(&student, row.UserID).Error
+		var quiz models.Quiz
+		_ = h.db.WithContext(ctx).First(&quiz, row.QuizID).Error
+		items = append(items, gin.H{"id": row.ID, "quiz_id": row.QuizID, "student_name": student.Name, "student_email": student.Email, "title_en": quiz.TitleEn, "title_id": quiz.TitleID, "score": row.Score, "passed": row.Passed, "attempt_number": row.AttemptNumber, "feedback": row.Feedback, "submitted_at": row.SubmittedAt})
+	}
+	return items
 }
 
 func (h *Controller) loadOwnedCourseByID(c *gin.Context) (models.Course, bool) {

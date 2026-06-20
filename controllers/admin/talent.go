@@ -85,7 +85,7 @@ func (h *Controller) ListTalentPlusApplications(c *gin.Context) {
 }
 
 func (h *Controller) UpdateTalentPlusApplication(c *gin.Context) {
-	updateLeadStatus[models.TalentPlusApplication](h.db, "Talent Bridge+ application saved")(c)
+	h.updateTalentApplicationStatus(c, "plus", "Talent Bridge+ application saved")
 }
 
 func (h *Controller) ListTalentApplications(c *gin.Context) {
@@ -112,7 +112,43 @@ func (h *Controller) ListTalentJobApplications(c *gin.Context) {
 }
 
 func (h *Controller) UpdateTalentApplication(c *gin.Context) {
-	updateLeadStatus[models.TalentJobApplication](h.db, "Talent application saved")(c)
+	h.updateTalentApplicationStatus(c, "job", "Talent application saved")
+}
+
+func (h *Controller) updateTalentApplicationStatus(c *gin.Context, applicationType string, message string) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid id"})
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Status) == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid status"})
+		return
+	}
+	status := strings.TrimSpace(req.Status)
+	if applicationType == "plus" {
+		if err := h.db.WithContext(c.Request.Context()).Model(&models.TalentPlusApplication{}).Where("id = ?", uint(id)).Update("status", status).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update status"})
+			return
+		}
+	} else {
+		if err := h.db.WithContext(c.Request.Context()).Model(&models.TalentJobApplication{}).Where("id = ?", uint(id)).Update("status", status).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update status"})
+			return
+		}
+	}
+	if services.TalentReviewStatusEligible(applicationType, status) {
+		if _, err := h.sendTalentReviewInvitation(c.Request.Context(), applicationType, uint(id), false); err != nil {
+			c.JSON(http.StatusOK, structs.Response{Success: true, Message: message + ", but automatic review invitation failed: " + err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, structs.Response{Success: true, Message: message + " and review invitation queued"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: message})
 }
 
 func (h *Controller) DownloadTalentApplicationCV(c *gin.Context) {

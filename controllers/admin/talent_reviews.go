@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -22,69 +23,77 @@ func (h *Controller) SendTalentReviewInvitation(c *gin.Context) {
 		return
 	}
 	req.ApplicationType = strings.ToLower(strings.TrimSpace(req.ApplicationType))
-	recipient, err := services.TalentReviewRecipientForApplication(h.db.WithContext(c.Request.Context()), req.ApplicationType, req.ApplicationID)
+	invitation, err := h.sendTalentReviewInvitation(c.Request.Context(), req.ApplicationType, req.ApplicationID, true)
 	if err != nil {
-		status := http.StatusBadRequest
+		status := http.StatusBadGateway
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			status = http.StatusNotFound
 		}
-		c.JSON(status, structs.Response{Success: false, Message: "Talent application not found"})
+		if strings.Contains(err.Error(), "eligible") || strings.Contains(err.Error(), "already submitted") {
+			status = http.StatusConflict
+		}
+		c.JSON(status, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
-	if !services.TalentReviewStatusEligible(req.ApplicationType, recipient.Status) {
-		c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "Application must be accepted, placed, or completed before inviting a review"})
-		return
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Review invitation sent", Data: invitation})
+}
+
+func (h *Controller) sendTalentReviewInvitation(ctx context.Context, applicationType string, applicationID uint, force bool) (models.TalentReviewInvitation, error) {
+	applicationType = strings.ToLower(strings.TrimSpace(applicationType))
+	recipient, err := services.TalentReviewRecipientForApplication(h.db.WithContext(ctx), applicationType, applicationID)
+	if err != nil {
+		return models.TalentReviewInvitation{}, errors.New("Talent application not found")
+	}
+	if !services.TalentReviewStatusEligible(applicationType, recipient.Status) {
+		return models.TalentReviewInvitation{}, errors.New("Application must be accepted, placed, or completed before inviting a review")
 	}
 
 	var invitation models.TalentReviewInvitation
-	err = h.db.WithContext(c.Request.Context()).Where("application_type = ? AND application_id = ?", req.ApplicationType, req.ApplicationID).First(&invitation).Error
+	err = h.db.WithContext(ctx).Where("application_type = ? AND application_id = ?", applicationType, applicationID).First(&invitation).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load review invitation"})
-		return
+		return models.TalentReviewInvitation{}, errors.New("Failed to load review invitation")
 	}
 	if invitation.UsedAt != nil {
-		c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "This application has already submitted a review"})
-		return
+		return models.TalentReviewInvitation{}, errors.New("This application has already submitted a review")
+	}
+	if !force && invitation.SentAt != nil {
+		return invitation, nil
 	}
 
 	rawToken, tokenHash, err := services.GenerateTalentReviewToken()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to generate review invitation"})
-		return
+		return models.TalentReviewInvitation{}, errors.New("Failed to generate review invitation")
 	}
 	expiresAt := time.Now().Add(time.Duration(h.cfg.TalentReviewInviteHours) * time.Hour)
-	invitation.ApplicationType = req.ApplicationType
-	invitation.ApplicationID = req.ApplicationID
+	invitation.ApplicationType = applicationType
+	invitation.ApplicationID = applicationID
 	invitation.Name = recipient.Name
 	invitation.Email = strings.ToLower(strings.TrimSpace(recipient.Email))
 	invitation.TokenHash = tokenHash
 	invitation.ExpiresAt = expiresAt
 	invitation.SentAt = nil
-	if err := h.db.WithContext(c.Request.Context()).Save(&invitation).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save review invitation"})
-		return
+	if err := h.db.WithContext(ctx).Save(&invitation).Error; err != nil {
+		return models.TalentReviewInvitation{}, errors.New("Failed to save review invitation")
 	}
 
 	locale := "en"
 	var user models.User
-	if err := h.db.WithContext(c.Request.Context()).Where("LOWER(email) = ?", invitation.Email).First(&user).Error; err == nil && user.Language == "id" {
+	if err := h.db.WithContext(ctx).Where("LOWER(email) = ?", invitation.Email).First(&user).Error; err == nil && user.Language == "id" {
 		locale = "id"
 	}
 	reviewURL := strings.TrimRight(h.cfg.FrontendURL, "/") + "/" + locale + "/talent-bridge/review/" + url.PathEscape(rawToken)
 	mailUser := models.User{Name: invitation.Name, Email: invitation.Email, Language: locale}
-	if err := services.SendTransactionalTemplateEmail(c.Request.Context(), h.db, services.EmailTemplateTalentReviewInvite, "talent_review_invitation", mailUser, map[string]string{
+	if err := services.SendTransactionalTemplateEmail(ctx, h.db, services.EmailTemplateTalentReviewInvite, "talent_review_invitation", mailUser, map[string]string{
 		"review_url": reviewURL,
 		"expires_at": expiresAt.Format("02 Jan 2006 15:04 MST"),
 	}); err != nil {
-		c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: err.Error()})
-		return
+		return models.TalentReviewInvitation{}, err
 	}
 
 	now := time.Now()
 	invitation.SentAt = &now
-	if err := h.db.WithContext(c.Request.Context()).Model(&invitation).Update("sent_at", now).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Review invitation sent but delivery status could not be saved"})
-		return
+	if err := h.db.WithContext(ctx).Model(&invitation).Update("sent_at", now).Error; err != nil {
+		return models.TalentReviewInvitation{}, errors.New("Review invitation sent but delivery status could not be saved")
 	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Review invitation sent", Data: invitation})
+	return invitation, nil
 }

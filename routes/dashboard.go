@@ -17,7 +17,7 @@ func RegisterDashboardRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Co
 	publicController := publiccontroller.NewController(db, cfg, uploadService)
 
 	protected := router.Group("")
-	protected.Use(middlewares.AuthGuard(db, cfg))
+	protected.Use(middlewares.AuthGuard(db, cfg), middlewares.RoleGuard("student", "admin"))
 	protected.POST("/products/:slug/purchase", publicController.CreateProductPurchase)
 	protected.GET("/products/:slug/review-eligibility", publicController.GetProductReviewEligibility)
 	protected.POST("/products/:slug/reviews", publicController.CreateProductReview)

@@ -25,6 +25,10 @@ const (
 	EmailTemplateCampaignAnnouncement = "email_template_campaign_announcement"
 	EmailTemplateCampaignDefault      = "email_template_campaign_default_wrapper"
 	EmailTemplateTalentReviewInvite   = "email_template_talent_review_invitation"
+	EmailTemplateTalentApplication    = "email_template_talent_application_received"
+	EmailTemplateTalentStatusUpdate   = "email_template_talent_status_update"
+	EmailTemplateHiringInquiry        = "email_template_hiring_inquiry_received"
+	EmailTemplatePartnerApplication   = "email_template_partner_application_received"
 )
 
 type TransactionalTemplateMapping struct {
@@ -49,6 +53,10 @@ func TransactionalTemplateMappings() []TransactionalTemplateMapping {
 		{Key: EmailTemplateCampaignAnnouncement, Label: "Campaign announcement", DefaultKey: "campaign_announcement", Description: "Default announcement campaign template."},
 		{Key: EmailTemplateCampaignDefault, Label: "Default simple campaign wrapper", DefaultKey: "campaign_simple", Description: "Editable wrapper used when Campaign Composer uses Default simple email."},
 		{Key: EmailTemplateTalentReviewInvite, Label: "Talent review invitation", DefaultKey: "talent_review_invitation", Description: "Sent when an eligible Talent Bridge applicant is invited to leave a review."},
+		{Key: EmailTemplateTalentApplication, Label: "Talent application received", DefaultKey: "talent_application_received", Description: "Sent after a Talent Bridge job or Talent Bridge+ application is submitted."},
+		{Key: EmailTemplateTalentStatusUpdate, Label: "Talent application status update", DefaultKey: "talent_status_update", Description: "Sent when a Talent Bridge application status changes."},
+		{Key: EmailTemplateHiringInquiry, Label: "Hiring inquiry received", DefaultKey: "hiring_inquiry_received", Description: "Sent after an employer submits an I'm Hiring inquiry."},
+		{Key: EmailTemplatePartnerApplication, Label: "Partner application received", DefaultKey: "partner_application_received", Description: "Sent after a university partner application is submitted."},
 	}
 }
 

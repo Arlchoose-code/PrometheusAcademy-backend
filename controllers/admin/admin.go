@@ -341,12 +341,19 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 
 	current, _ := c.Get("user")
 	currentUser, _ := current.(models.User)
-	if role == "student" && currentUser.ID == uint(userID) {
+
+	var user models.User
+	if err := h.db.WithContext(c.Request.Context()).First(&user, uint(userID)).Error; err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "User not found"})
+		return
+	}
+
+	if role == "student" && currentUser.ID == user.ID {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "You cannot remove your own admin role"})
 		return
 	}
 
-	if role == "student" {
+	if role == "student" && user.IsAdmin {
 		var adminCount int64
 		if err := h.db.WithContext(c.Request.Context()).Model(&models.User{}).Where("is_admin = ?", true).Count(&adminCount).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check admins"})
@@ -358,7 +365,7 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 		}
 	}
 
-	updates := map[string]any{"is_student": true}
+	updates := map[string]any{}
 	if role == "instructor" {
 		enabled := true
 		if req.Enabled != nil {
@@ -377,23 +384,30 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 			updates["is_instructor"] = false
 			updates["instructor_granted_at"] = nil
 			updates["instructor_granted_by"] = nil
+			if !user.IsAdmin {
+				updates["is_student"] = true
+			}
 		} else {
 			now := time.Now().UTC()
 			updates["is_instructor"] = true
 			updates["instructor_granted_at"] = &now
 			updates["instructor_granted_by"] = currentUser.ID
+			if !user.IsAdmin {
+				updates["is_student"] = false
+			}
 		}
 	} else if role == "admin" {
 		updates["is_admin"] = true
+		updates["is_student"] = true
 	} else {
 		updates["is_admin"] = false
+		updates["is_student"] = !user.IsInstructor
 	}
 	if err := h.db.WithContext(c.Request.Context()).Model(&models.User{}).Where("id = ?", uint(userID)).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update role"})
 		return
 	}
 
-	var user models.User
 	if err := h.db.WithContext(c.Request.Context()).First(&user, uint(userID)).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to reload user"})
 		return
