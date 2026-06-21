@@ -173,6 +173,86 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 	return nil
 }
 
+func EnsureR2ObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Config) (int, error) {
+	cfg = EffectiveStorageConfig(ctx, db, cfg)
+	r2, err := NewR2Storage(ctx, cfg, cfg.R2Bucket, cfg.R2AccessKeyID, cfg.R2SecretAccessKey)
+	if err != nil {
+		return 0, fmt.Errorf("connect R2: %w", err)
+	}
+	objects, err := r2.List(ctx, "")
+	if err != nil {
+		return 0, fmt.Errorf("list R2 objects: %w", err)
+	}
+	created := 0
+	for _, obj := range objects {
+		if obj.Key == "" {
+			continue
+		}
+		var existing models.StoredObject
+		if err := db.WithContext(ctx).Select("id").Where("object_key = ?", obj.Key).First(&existing).Error; err == nil {
+			continue
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return created, err
+		}
+		publicPath := "/" + obj.Key
+		visibility := "public"
+		class := objectClassForKey(obj.Key)
+		if class == "product_file" || class == "course_material" || class == "assignment_submission" || class == "talent_cv" || class == "generated" {
+			visibility = "protected"
+		}
+		originalName := filepath.Base(obj.Key)
+		mimeType := ContentTypeForObject(obj.Key, "")
+		RegisterStoredObject(ctx, db, cfg, StoredObject{Key: obj.Key, Provider: "r2", Bucket: cfg.R2Bucket, Size: obj.Size}, publicPath, originalName, mimeType, visibility, "admin", class, 0, nil)
+		created++
+	}
+	return created, nil
+}
+
+func objectClassForKey(key string) string {
+	switch {
+	case strings.HasPrefix(key, "uploads/avatars"):
+		return "avatar"
+	case strings.HasPrefix(key, "uploads/courses"):
+		return "course_thumbnail"
+	case strings.HasPrefix(key, "uploads/products"):
+		return "product_thumbnail"
+	case strings.HasPrefix(key, "uploads/product-files"):
+		return "product_file"
+	case strings.HasPrefix(key, "uploads/banners"):
+		return "banner"
+	case strings.HasPrefix(key, "uploads/pages"):
+		return "cms_image"
+	case strings.HasPrefix(key, "uploads/testimonials"):
+		return "testimonial_avatar"
+	case strings.HasPrefix(key, "uploads/partners"):
+		return "partner_logo"
+	case strings.HasPrefix(key, "uploads/media"):
+		return "media"
+	case strings.HasPrefix(key, "uploads/logos"):
+		return "logo"
+	case strings.HasPrefix(key, "uploads/favicons"):
+		return "favicon"
+	case strings.HasPrefix(key, "uploads/seo"):
+		return "seo"
+	case strings.HasPrefix(key, "uploads/talent-cv"):
+		return "talent_cv"
+	case strings.HasPrefix(key, "uploads/course-files"):
+		return "course_material"
+	case strings.HasPrefix(key, "uploads/course-addons"):
+		return "course_addon"
+	case strings.HasPrefix(key, "uploads/invoices"):
+		return "generated"
+	case strings.HasPrefix(key, "uploads/certificates"):
+		return "generated"
+	case strings.HasPrefix(key, "backups/"):
+		return "backup"
+	case strings.HasPrefix(key, "generated/"):
+		return "generated"
+	default:
+		return "public"
+	}
+}
+
 func optionalOwnerSelect(ownerColumn string) string {
 	if ownerColumn == "" {
 		return ""

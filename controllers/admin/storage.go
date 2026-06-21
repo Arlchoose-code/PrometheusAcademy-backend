@@ -150,3 +150,13 @@ func (h *Controller) CleanupGeneratedCache(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Generated cache cleanup completed", Data: gin.H{"removed": removed}})
 }
+
+func (h *Controller) ScanR2Objects(c *gin.Context) {
+	created, err := services.EnsureR2ObjectInventory(c.Request.Context(), h.db, h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	status, _ := services.GetStorageStatus(c.Request.Context(), h.db, h.cfg)
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: fmt.Sprintf("R2 scan completed: %d new objects registered", created), Data: status})
+}

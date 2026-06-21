@@ -48,6 +48,7 @@ func RegisterAdminRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Config
 	admin.POST("/storage/migrations/:id/retry", adminController.RetryStorageMigration)
 	admin.POST("/storage/backups/run", adminController.RunStorageBackup)
 	admin.POST("/storage/generated-cache/cleanup", adminController.CleanupGeneratedCache)
+	admin.POST("/storage/r2/scan", adminController.ScanR2Objects)
 	admin.GET("/document-templates", adminController.ListDocumentTemplates)
 	admin.POST("/document-templates", adminController.CreateDocumentTemplate)
 	admin.POST("/document-templates/preview", adminController.PreviewDocumentTemplate)

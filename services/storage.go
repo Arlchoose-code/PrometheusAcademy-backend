@@ -229,6 +229,32 @@ func (s *R2Storage) SignedURL(ctx context.Context, key string, ttl time.Duration
 	}
 	return o.URL, nil
 }
+
+type R2ObjectSummary struct {
+	Key          string
+	Size         int64
+	LastModified time.Time
+	ContentType  string
+}
+
+func (s *R2Storage) List(ctx context.Context, prefix string) ([]R2ObjectSummary, error) {
+	var all []R2ObjectSummary
+	var contToken *string
+	for {
+		out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: aws.String(prefix), ContinuationToken: contToken})
+		if err != nil {
+			return all, err
+		}
+		for _, obj := range out.Contents {
+			all = append(all, R2ObjectSummary{Key: aws.ToString(obj.Key), Size: aws.ToInt64(obj.Size), LastModified: aws.ToTime(obj.LastModified)})
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		contToken = out.NextContinuationToken
+	}
+	return all, nil
+}
 func optionalString(v string) *string {
 	if v == "" {
 		return nil
