@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,9 @@ import (
 
 	"gorm.io/gorm"
 )
+
+var ErrStorageMigrationActive = errors.New("pause the active storage migration before backing up objects")
+var ErrStorageBackupActive = errors.New("an object backup is already queued or running")
 
 type StorageStatus struct {
 	ActiveProvider     string                      `json:"active_provider"`
@@ -133,15 +137,33 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 			if err != nil {
 				continue
 			}
+			var existing models.StoredObject
+			if err := db.WithContext(ctx).Select("id").Where("object_key = ?", key).First(&existing).Error; err == nil {
+				// Inventory discovery must not downgrade an object already migrated
+				// to R2 merely because its original local copy still exists.
+				continue
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
 			RegisterStoredObject(ctx, db, cfg, StoredObject{Key: key, Provider: "local", Size: st.Size()}, p, filepath.Base(p), "", visibility, ownerScopeGuess(db, owner), class, owner, nil)
 		}
 		return nil
 	}
 	for _, item := range []struct{ table, column, class, visibility, owner string }{
+		{"users", "avatar", "avatar", "public", "id"},
+		{"courses", "thumbnail", "course_thumbnail", "public", "instructor_id"},
+		{"products", "thumbnail", "product_thumbnail", "public", ""},
+		{"pages", "image_path", "cms_image", "public", ""},
+		{"page_sections", "image_path", "cms_image", "public", ""},
+		{"testimonials", "avatar", "testimonial_avatar", "public", "user_id"},
+		{"banners", "image_path", "banner", "public", ""},
+		{"partners", "logo", "partner_logo", "public", ""},
 		{"media_files", "file_path", "media", "public", "uploaded_by"},
 		{"product_files", "file_path", "product_file", "protected", ""},
+		{"topic_attachments", "file_path", "course_material", "protected", ""},
 		{"topic_blocks", "file_path", "course_material", "protected", ""},
 		{"course_addons", "file_path", "course_addon", "protected", ""},
+		{"assignment_submissions", "file_path", "assignment_submission", "protected", "user_id"},
 		{"talent_job_applications", "cv_path", "talent_cv", "protected", ""},
 		{"invoices", "file_path", "generated", "protected", ""},
 		{"certificates", "certificate_url", "generated", "protected", "user_id"},
@@ -165,6 +187,13 @@ func ownerScopeGuess(db *gorm.DB, owner uint) string {
 }
 
 func StartStorageMigration(ctx context.Context, db *gorm.DB, cfg config.Config, dryRun bool) (models.StorageMigrationJob, error) {
+	var activeBackups int64
+	if err := db.WithContext(ctx).Model(&models.StorageBackup{}).Where("status IN ?", []string{"queued", "running"}).Count(&activeBackups).Error; err != nil {
+		return models.StorageMigrationJob{}, fmt.Errorf("check active object backup: %w", err)
+	}
+	if activeBackups > 0 {
+		return models.StorageMigrationJob{}, ErrStorageBackupActive
+	}
 	if !dryRun {
 		if err := TestR2Connection(ctx, cfg); err != nil {
 			return models.StorageMigrationJob{}, fmt.Errorf("R2 preflight failed: %w", err)
@@ -208,6 +237,74 @@ func StartStorageMigration(ctx context.Context, db *gorm.DB, cfg config.Config, 
 		}
 	}
 	return job, nil
+}
+
+func QueueObjectBackup(ctx context.Context, db *gorm.DB) (models.StorageBackup, error) {
+	var activeMigrations int64
+	if err := db.WithContext(ctx).Model(&models.StorageMigrationJob{}).Where("status IN ?", []string{"queued", "running"}).Count(&activeMigrations).Error; err != nil {
+		return models.StorageBackup{}, fmt.Errorf("check active storage migration: %w", err)
+	}
+	if activeMigrations > 0 {
+		return models.StorageBackup{}, ErrStorageMigrationActive
+	}
+	var activeBackups int64
+	if err := db.WithContext(ctx).Model(&models.StorageBackup{}).Where("status IN ?", []string{"queued", "running"}).Count(&activeBackups).Error; err != nil {
+		return models.StorageBackup{}, fmt.Errorf("check active object backup: %w", err)
+	}
+	if activeBackups > 0 {
+		return models.StorageBackup{}, ErrStorageBackupActive
+	}
+	backup := models.StorageBackup{Status: "queued", RestoreStatus: "not_tested"}
+	if err := db.WithContext(ctx).Create(&backup).Error; err != nil {
+		return backup, err
+	}
+	return backup, nil
+}
+
+// StartStorageBackupWorker drains durable backup jobs outside the HTTP request.
+// A running job is picked up again after a backend restart.
+func StartStorageBackupWorker(ctx context.Context, db *gorm.DB, cfg config.Config) {
+	run := func() {
+		jobCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		_ = ProcessQueuedObjectBackup(jobCtx, db, cfg)
+	}
+	run()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			run()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func ProcessQueuedObjectBackup(ctx context.Context, db *gorm.DB, cfg config.Config) error {
+	var queued models.StorageBackup
+	if err := db.WithContext(ctx).Where("status IN ?", []string{"queued", "running"}).Order("created_at asc").First(&queued).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := db.WithContext(ctx).Model(&queued).Updates(map[string]any{"status": "running", "last_error": ""}).Error; err != nil {
+		return err
+	}
+	result, err := CreateObjectBackupManifest(ctx, db, cfg)
+	if err != nil {
+		_ = db.WithContext(context.Background()).Model(&queued).Updates(map[string]any{"status": "failed", "last_error": err.Error()}).Error
+		return err
+	}
+	// CreateObjectBackupManifest persists the final verified/partial record.
+	// Remove the transient queue row once that durable result exists.
+	if err := db.WithContext(context.Background()).Delete(&queued).Error; err != nil {
+		return err
+	}
+	_ = result
+	return nil
 }
 
 // StartStorageMigrationWorker continuously drains queued migration batches.
@@ -348,24 +445,75 @@ func CleanupExpiredGeneratedObjects(ctx context.Context, db *gorm.DB, cfg config
 }
 
 func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Config) (models.StorageBackup, error) {
+	var activeMigrations int64
+	if err := db.WithContext(ctx).Model(&models.StorageMigrationJob{}).Where("status IN ?", []string{"queued", "running"}).Count(&activeMigrations).Error; err != nil {
+		return models.StorageBackup{}, fmt.Errorf("check active storage migration: %w", err)
+	}
+	if activeMigrations > 0 {
+		return models.StorageBackup{}, ErrStorageMigrationActive
+	}
+	if err := EnsureStoredObjectInventory(ctx, db, cfg); err != nil {
+		return models.StorageBackup{}, fmt.Errorf("refresh backup inventory: %w", err)
+	}
 	var objects []models.StoredObject
 	if err := db.WithContext(ctx).Order("object_key asc").Find(&objects).Error; err != nil {
 		return models.StorageBackup{}, err
 	}
-	raw, _ := json.MarshalIndent(objects, "", "  ")
-	sum := sha256.Sum256(raw)
 	key := "backups/" + time.Now().UTC().Format("2006/01/02/150405") + "-object-manifest.json"
 	backupCfg := cfg
+	backupCfg.StorageProvider = "r2"
 	if cfg.BackupR2Bucket != "" {
 		backupCfg.R2Bucket = cfg.BackupR2Bucket
 		backupCfg.R2AccessKeyID = fallbackString(cfg.BackupR2AccessKeyID, cfg.R2AccessKeyID)
 		backupCfg.R2SecretAccessKey = fallbackString(cfg.BackupR2SecretAccessKey, cfg.R2SecretAccessKey)
-		backupCfg.StorageProvider = "r2"
 	}
 	storage, err := NewObjectStorage(ctx, backupCfg)
 	if err != nil {
 		return models.StorageBackup{}, err
 	}
+	effective := EffectiveStorageConfig(ctx, db, cfg)
+	backedUpObjects := make([]models.StoredObject, 0, len(objects))
+	missingKeys := make([]string, 0)
+	var total int64
+	for _, obj := range objects {
+		exists, existsErr := storage.Exists(ctx, obj.ObjectKey)
+		if existsErr != nil {
+			return models.StorageBackup{}, fmt.Errorf("verify backup object %s: %w", obj.ObjectKey, existsErr)
+		}
+		if exists {
+			if backupCfg.R2Bucket == cfg.R2Bucket {
+				obj.StorageProvider = "r2"
+				obj.Bucket = cfg.R2Bucket
+				_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket}).Error
+			}
+			backedUpObjects = append(backedUpObjects, obj)
+			total += obj.SizeBytes
+			continue
+		}
+		reader, openErr := openObjectForBackup(ctx, effective, obj)
+		if openErr != nil {
+			missingKeys = append(missingKeys, obj.ObjectKey)
+			continue
+		}
+		storedObject, putErr := storage.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: reader, ContentType: obj.MimeType})
+		reader.Close()
+		if putErr != nil {
+			return models.StorageBackup{}, fmt.Errorf("copy backup object %s: %w", obj.ObjectKey, putErr)
+		}
+		if obj.ChecksumSHA256 != "" && storedObject.ChecksumSHA256 != obj.ChecksumSHA256 {
+			_ = storage.Delete(ctx, obj.ObjectKey)
+			return models.StorageBackup{}, fmt.Errorf("verify backup object %s: checksum mismatch", obj.ObjectKey)
+		}
+		if backupCfg.R2Bucket == cfg.R2Bucket {
+			obj.StorageProvider = "r2"
+			obj.Bucket = cfg.R2Bucket
+			_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket, "checksum_sha256": storedObject.ChecksumSHA256}).Error
+		}
+		backedUpObjects = append(backedUpObjects, obj)
+		total += obj.SizeBytes
+	}
+	raw, _ := json.MarshalIndent(backedUpObjects, "", "  ")
+	sum := sha256.Sum256(raw)
 	stored, err := storage.Put(ctx, PutObjectInput{Key: key, Body: bytes.NewReader(raw), ContentType: "application/json"})
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unauthorized") || strings.Contains(err.Error(), "StatusCode: 401") {
@@ -373,14 +521,51 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 		}
 		return models.StorageBackup{}, err
 	}
-	var total int64
-	for _, obj := range objects {
-		total += obj.SizeBytes
-	}
 	now := time.Now()
-	backup := models.StorageBackup{Status: "verified", ManifestObjectKey: stored.Key, ObjectCount: len(objects), TotalBytes: total, ChecksumSHA256: hex.EncodeToString(sum[:]), VerifiedAt: &now, RestoreStatus: "not_tested"}
+	backup := models.StorageBackup{Status: "verified", ManifestObjectKey: stored.Key, ObjectCount: len(backedUpObjects), TotalBytes: total, ChecksumSHA256: hex.EncodeToString(sum[:]), VerifiedAt: &now, RestoreStatus: "not_tested"}
+	if len(missingKeys) > 0 {
+		backup.Status = "partial"
+		backup.VerifiedAt = nil
+		backup.LastError = fmt.Sprintf("%d source object(s) are missing: %s", len(missingKeys), strings.Join(missingKeys, ", "))
+	}
 	if err := db.WithContext(ctx).Create(&backup).Error; err != nil {
 		return backup, err
 	}
 	return backup, nil
+}
+
+func openObjectForBackup(ctx context.Context, cfg config.Config, obj models.StoredObject) (io.ReadCloser, error) {
+	type sourceCandidate struct {
+		name    string
+		storage ObjectStorage
+	}
+
+	candidates := make([]sourceCandidate, 0, 3)
+	declared, declaredErr := newObjectStorageForStoredObject(ctx, cfg, obj)
+	if declaredErr == nil {
+		candidates = append(candidates, sourceCandidate{name: "recorded provider", storage: declared})
+	}
+	if obj.StorageProvider != "local" {
+		candidates = append(candidates, sourceCandidate{name: "local storage", storage: &LocalStorage{Root: cfg.StoragePath}})
+	}
+	if obj.StorageProvider != "r2" || fallbackString(obj.Bucket, cfg.R2Bucket) != cfg.R2Bucket {
+		r2Cfg := cfg
+		r2Cfg.StorageProvider = "r2"
+		if mainR2, err := NewObjectStorage(ctx, r2Cfg); err == nil {
+			candidates = append(candidates, sourceCandidate{name: "main R2", storage: mainR2})
+		}
+	}
+
+	var failures []string
+	if declaredErr != nil {
+		failures = append(failures, "recorded provider: "+declaredErr.Error())
+	}
+	for _, candidate := range candidates {
+		reader, _, err := candidate.storage.Open(ctx, obj.ObjectKey)
+		if err == nil {
+			return reader, nil
+		}
+		failures = append(failures, candidate.name+": "+err.Error())
+	}
+	return nil, fmt.Errorf("object is unavailable from every source (%s)", strings.Join(failures, "; "))
 }

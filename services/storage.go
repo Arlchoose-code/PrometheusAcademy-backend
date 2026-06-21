@@ -312,6 +312,21 @@ func OpenStoredPublicPath(ctx context.Context, db *gorm.DB, cfg config.Config, p
 				if localErr == nil {
 					return reader, info, nil
 				}
+				if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, obj.ObjectKey); backupErr == nil {
+					return backupReader, backupInfo, nil
+				}
+			} else {
+				reader, info, r2Err := openR2PublicObject(ctx, effective, obj.ObjectKey)
+				if r2Err == nil {
+					_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{
+						"storage_provider": "r2",
+						"bucket":           effective.R2Bucket,
+					}).Error
+					return reader, info, nil
+				}
+				if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, obj.ObjectKey); backupErr == nil {
+					return backupReader, backupInfo, nil
+				}
 			}
 			return nil, ObjectInfo{}, err
 		}
@@ -321,10 +336,54 @@ func OpenStoredPublicPath(ctx context.Context, db *gorm.DB, cfg config.Config, p
 		return nil, ObjectInfo{}, err
 	}
 	reader, info, err := storage.Open(ctx, key)
-	if err == nil || effective.StorageProvider != "r2" {
+	if err == nil {
 		return reader, info, err
 	}
-	return (&LocalStorage{Root: effective.StoragePath}).Open(ctx, key)
+	if effective.StorageProvider == "r2" {
+		if localReader, localInfo, localErr := (&LocalStorage{Root: effective.StoragePath}).Open(ctx, key); localErr == nil {
+			return localReader, localInfo, nil
+		}
+		if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, key); backupErr == nil {
+			return backupReader, backupInfo, nil
+		}
+		return nil, ObjectInfo{}, err
+	}
+	if r2Reader, r2Info, r2Err := openR2PublicObject(ctx, effective, key); r2Err == nil {
+		return r2Reader, r2Info, nil
+	}
+	if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, key); backupErr == nil {
+		return backupReader, backupInfo, nil
+	}
+	return nil, ObjectInfo{}, err
+}
+
+func openR2PublicObject(ctx context.Context, cfg config.Config, key string) (io.ReadCloser, ObjectInfo, error) {
+	if strings.TrimSpace(cfg.R2Bucket) == "" || strings.TrimSpace(cfg.R2AccessKeyID) == "" || strings.TrimSpace(cfg.R2SecretAccessKey) == "" {
+		return nil, ObjectInfo{}, fmt.Errorf("R2 fallback is not configured")
+	}
+	r2Cfg := cfg
+	r2Cfg.StorageProvider = "r2"
+	storage, err := NewObjectStorage(ctx, r2Cfg)
+	if err != nil {
+		return nil, ObjectInfo{}, err
+	}
+	return storage.Open(ctx, key)
+}
+
+func openBackupR2Object(ctx context.Context, cfg config.Config, key string) (io.ReadCloser, ObjectInfo, error) {
+	if strings.TrimSpace(cfg.BackupR2Bucket) == "" {
+		return nil, ObjectInfo{}, fmt.Errorf("backup R2 fallback is not configured")
+	}
+	backupCfg := cfg
+	backupCfg.StorageProvider = "r2"
+	backupCfg.R2Bucket = cfg.BackupR2Bucket
+	backupCfg.R2AccessKeyID = fallbackString(cfg.BackupR2AccessKeyID, cfg.R2AccessKeyID)
+	backupCfg.R2SecretAccessKey = fallbackString(cfg.BackupR2SecretAccessKey, cfg.R2SecretAccessKey)
+	storage, err := NewObjectStorage(ctx, backupCfg)
+	if err != nil {
+		return nil, ObjectInfo{}, err
+	}
+	return storage.Open(ctx, key)
 }
 
 func DeleteStoredPublicPath(ctx context.Context, db *gorm.DB, cfg config.Config, publicPath string) error {

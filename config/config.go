@@ -17,6 +17,7 @@ import (
 type Config struct {
 	AppPort                 string
 	AppEnv                  string
+	HTTPWriteTimeoutSeconds int
 	DBHost                  string
 	DBPort                  string
 	DBUser                  string
@@ -61,6 +62,7 @@ func Load() Config {
 	return Config{
 		AppPort:                 env("APP_PORT", "8080"),
 		AppEnv:                  env("APP_ENV", "development"),
+		HTTPWriteTimeoutSeconds: intEnv("HTTP_WRITE_TIMEOUT_SECONDS", 300),
 		DBHost:                  env("DB_HOST", "127.0.0.1"),
 		DBPort:                  env("DB_PORT", "3306"),
 		DBUser:                  env("DB_USER", "root"),

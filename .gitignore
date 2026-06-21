@@ -11,6 +11,7 @@ tmp/
 storage/
 
 # Build and test artifacts
+.gocache/
 *.exe
 *.test
 coverage.out

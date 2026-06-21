@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -65,6 +66,10 @@ func (h *Controller) StartStorageMigration(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	job, err := services.StartStorageMigration(c.Request.Context(), h.db, h.cfg, req.DryRun)
 	if err != nil {
+		if errors.Is(err, services.ErrStorageBackupActive) {
+			c.JSON(http.StatusConflict, structs.Response{Success: false, Message: err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
@@ -112,12 +117,16 @@ func (h *Controller) ResumeStorageMigration(c *gin.Context) {
 }
 
 func (h *Controller) RunStorageBackup(c *gin.Context) {
-	backup, err := services.CreateObjectBackupManifest(c.Request.Context(), h.db, h.cfg)
+	backup, err := services.QueueObjectBackup(c.Request.Context(), h.db)
 	if err != nil {
+		if errors.Is(err, services.ErrStorageMigrationActive) || errors.Is(err, services.ErrStorageBackupActive) {
+			c.JSON(http.StatusConflict, structs.Response{Success: false, Message: err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Object backup manifest created", Data: backup})
+	c.JSON(http.StatusAccepted, structs.Response{Success: true, Message: "Object backup queued and will continue in the background", Data: backup})
 }
 
 func (h *Controller) RetryStorageMigration(c *gin.Context) {

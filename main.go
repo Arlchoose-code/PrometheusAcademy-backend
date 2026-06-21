@@ -59,6 +59,7 @@ func main() {
 		go services.StartEmailCampaignWorker(ctx, db)
 		go services.StartAutomationWorker(ctx, db)
 		go services.StartStorageMigrationWorker(ctx, db, cfg)
+		go services.StartStorageBackupWorker(ctx, db, cfg)
 	}
 
 	router := gin.New()
@@ -80,7 +81,7 @@ func main() {
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      time.Duration(cfg.HTTPWriteTimeoutSeconds) * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
