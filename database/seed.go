@@ -118,7 +118,7 @@ func seedUsers(ctx context.Context, db *gorm.DB) (models.User, models.User, erro
 	}
 
 	student := models.User{Name: "Nadia Putri", Email: "nadia@example.com", Password: hash, IsStudent: true, Language: "id", EmailVerifiedAt: &verifiedAt}
-	if err := db.WithContext(ctx).Where(models.User{Email: student.Email}).Assign(student).FirstOrCreate(&student).Error; err != nil {
+	if err := db.WithContext(ctx).Where(models.User{Email: student.Email}).Attrs(student).FirstOrCreate(&student).Error; err != nil {
 		return admin, student, fmt.Errorf("seed student user: %w", err)
 	}
 
@@ -324,7 +324,7 @@ func seedCommerce(ctx context.Context, db *gorm.DB, userID uint) error {
 	}
 
 	order := models.Order{UserID: userID, TotalAmount: 149000, Status: "pending", MidtransOrderID: "SEED-ORDER-001"}
-	if err := db.WithContext(ctx).Where(models.Order{MidtransOrderID: order.MidtransOrderID}).Assign(order).FirstOrCreate(&order).Error; err != nil {
+	if err := db.WithContext(ctx).Where(models.Order{MidtransOrderID: order.MidtransOrderID}).Attrs(order).FirstOrCreate(&order).Error; err != nil {
 		return fmt.Errorf("seed order: %w", err)
 	}
 
@@ -416,7 +416,7 @@ func seedCMS(ctx context.Context, db *gorm.DB) error {
 	}
 	for _, item := range testimonials {
 		testimonial := item
-		if err := db.WithContext(ctx).Where(models.Testimonial{Name: testimonial.Name}).Assign(testimonial).FirstOrCreate(&testimonial).Error; err != nil {
+		if err := db.WithContext(ctx).Where(models.Testimonial{Name: testimonial.Name}).Attrs(testimonial).FirstOrCreate(&testimonial).Error; err != nil {
 			return fmt.Errorf("seed testimonial %s: %w", item.Name, err)
 		}
 	}
@@ -485,7 +485,7 @@ func seedCMS(ctx context.Context, db *gorm.DB) error {
 	}
 	for _, item := range templates {
 		template := item
-		if err := db.WithContext(ctx).Where(models.EmailTemplate{Key: template.Key}).Assign(template).FirstOrCreate(&template).Error; err != nil {
+		if err := db.WithContext(ctx).Where(models.EmailTemplate{Key: template.Key}).Attrs(template).FirstOrCreate(&template).Error; err != nil {
 			return fmt.Errorf("seed email template %s: %w", item.Key, err)
 		}
 	}
@@ -563,11 +563,7 @@ func seedTalentAndPartners(ctx context.Context, db *gorm.DB) error {
 		if partner.PartnerType == "" {
 			partner.PartnerType = "university"
 		}
-		if err := db.WithContext(ctx).Where(models.Partner{Name: partner.Name}).Assign(map[string]any{
-			"partner_type": partner.PartnerType,
-			"status":       partner.Status,
-			"is_active":    partner.IsActive,
-		}).Attrs(partner).FirstOrCreate(&partner).Error; err != nil {
+		if err := db.WithContext(ctx).Where(models.Partner{Name: partner.Name}).Attrs(partner).FirstOrCreate(&partner).Error; err != nil {
 			return fmt.Errorf("seed partner %s: %w", item.Name, err)
 		}
 	}

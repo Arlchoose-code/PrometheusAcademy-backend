@@ -15,6 +15,7 @@ func RegisterPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Confi
 
 	router.GET("/health", publicController.GetHealth)
 	router.GET("/uploads/*filepath", publicController.ServeUpload)
+	router.HEAD("/uploads/*filepath", publicController.ServeUpload)
 	router.GET("/settings/public", publicController.GetPublicSettings)
 	router.GET("/homepage", publicController.GetHomepage)
 	router.POST("/newsletter", publicController.CreateNewsletterSubscription)

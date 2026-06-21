@@ -51,6 +51,10 @@ type StorageBackup struct {
 	DatabaseObjectKey string     `gorm:"size:700" json:"database_object_key"`
 	ManifestObjectKey string     `gorm:"size:700" json:"manifest_object_key"`
 	ObjectCount       int        `json:"object_count"`
+	TotalItems        int        `json:"total_items"`
+	ProcessedItems    int        `json:"processed_items"`
+	VerifiedItems     int        `json:"verified_items"`
+	MissingItems      int        `json:"missing_items"`
 	TotalBytes        int64      `json:"total_bytes"`
 	ChecksumSHA256    string     `gorm:"size:64" json:"checksum_sha256"`
 	VerifiedAt        *time.Time `json:"verified_at"`

@@ -293,17 +293,11 @@ func ProcessQueuedObjectBackup(ctx context.Context, db *gorm.DB, cfg config.Conf
 	if err := db.WithContext(ctx).Model(&queued).Updates(map[string]any{"status": "running", "last_error": ""}).Error; err != nil {
 		return err
 	}
-	result, err := CreateObjectBackupManifest(ctx, db, cfg)
+	_, err := CreateObjectBackupManifest(ctx, db, cfg)
 	if err != nil {
 		_ = db.WithContext(context.Background()).Model(&queued).Updates(map[string]any{"status": "failed", "last_error": err.Error()}).Error
 		return err
 	}
-	// CreateObjectBackupManifest persists the final verified/partial record.
-	// Remove the transient queue row once that durable result exists.
-	if err := db.WithContext(context.Background()).Delete(&queued).Error; err != nil {
-		return err
-	}
-	_ = result
 	return nil
 }
 
@@ -460,6 +454,16 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 	if err := db.WithContext(ctx).Order("object_key asc").Find(&objects).Error; err != nil {
 		return models.StorageBackup{}, err
 	}
+	var activeBackup models.StorageBackup
+	hasActiveBackup := db.WithContext(ctx).Where("status = ?", "running").Order("created_at asc").First(&activeBackup).Error == nil
+	if hasActiveBackup {
+		_ = db.WithContext(ctx).Model(&activeBackup).Updates(map[string]any{
+			"total_items":     len(objects),
+			"processed_items": 0,
+			"verified_items":  0,
+			"missing_items":   0,
+		}).Error
+	}
 	key := "backups/" + time.Now().UTC().Format("2006/01/02/150405") + "-object-manifest.json"
 	backupCfg := cfg
 	backupCfg.StorageProvider = "r2"
@@ -476,6 +480,18 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 	backedUpObjects := make([]models.StoredObject, 0, len(objects))
 	missingKeys := make([]string, 0)
 	var total int64
+	processedItems := 0
+	verifiedItems := 0
+	missingItems := 0
+	updateProgress := func() {
+		if hasActiveBackup {
+			_ = db.WithContext(ctx).Model(&activeBackup).Updates(map[string]any{
+				"processed_items": processedItems,
+				"verified_items":  verifiedItems,
+				"missing_items":   missingItems,
+			}).Error
+		}
+	}
 	for _, obj := range objects {
 		exists, existsErr := storage.Exists(ctx, obj.ObjectKey)
 		if existsErr != nil {
@@ -490,11 +506,17 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 			}
 			backedUpObjects = append(backedUpObjects, obj)
 			total += obj.SizeBytes
+			processedItems++
+			verifiedItems++
+			updateProgress()
 			continue
 		}
 		reader, openErr := openObjectForBackup(ctx, effective, obj)
 		if openErr != nil {
 			missingKeys = append(missingKeys, obj.ObjectKey)
+			processedItems++
+			missingItems++
+			updateProgress()
 			continue
 		}
 		contentType := ContentTypeForObject(obj.ObjectKey, obj.MimeType)
@@ -515,6 +537,9 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 		}
 		backedUpObjects = append(backedUpObjects, obj)
 		total += obj.SizeBytes
+		processedItems++
+		verifiedItems++
+		updateProgress()
 	}
 	raw, _ := json.MarshalIndent(backedUpObjects, "", "  ")
 	sum := sha256.Sum256(raw)
@@ -526,11 +551,34 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 		return models.StorageBackup{}, err
 	}
 	now := time.Now()
-	backup := models.StorageBackup{Status: "verified", ManifestObjectKey: stored.Key, ObjectCount: len(backedUpObjects), TotalBytes: total, ChecksumSHA256: hex.EncodeToString(sum[:]), VerifiedAt: &now, RestoreStatus: "not_tested"}
+	backup := models.StorageBackup{Status: "verified", ManifestObjectKey: stored.Key, ObjectCount: len(backedUpObjects), TotalItems: len(objects), ProcessedItems: processedItems, VerifiedItems: verifiedItems, MissingItems: missingItems, TotalBytes: total, ChecksumSHA256: hex.EncodeToString(sum[:]), VerifiedAt: &now, RestoreStatus: "not_tested"}
 	if len(missingKeys) > 0 {
 		backup.Status = "partial"
 		backup.VerifiedAt = nil
 		backup.LastError = fmt.Sprintf("%d source object(s) are missing: %s", len(missingKeys), strings.Join(missingKeys, ", "))
+	}
+	if hasActiveBackup {
+		updates := map[string]any{
+			"status":              backup.Status,
+			"manifest_object_key": backup.ManifestObjectKey,
+			"object_count":        backup.ObjectCount,
+			"total_items":         backup.TotalItems,
+			"processed_items":     backup.ProcessedItems,
+			"verified_items":      backup.VerifiedItems,
+			"missing_items":       backup.MissingItems,
+			"total_bytes":         backup.TotalBytes,
+			"checksum_sha256":     backup.ChecksumSHA256,
+			"verified_at":         backup.VerifiedAt,
+			"restore_status":      backup.RestoreStatus,
+			"last_error":          backup.LastError,
+		}
+		if err := db.WithContext(ctx).Model(&activeBackup).Updates(updates).Error; err != nil {
+			return backup, err
+		}
+		if err := db.WithContext(ctx).First(&activeBackup, activeBackup.ID).Error; err != nil {
+			return backup, err
+		}
+		return activeBackup, nil
 	}
 	if err := db.WithContext(ctx).Create(&backup).Error; err != nil {
 		return backup, err

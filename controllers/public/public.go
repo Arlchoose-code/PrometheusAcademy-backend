@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,17 +60,24 @@ func (h *Controller) ServeUpload(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	effectiveCfg := services.EffectiveStorageConfig(c.Request.Context(), h.db, h.cfg)
 	publicPath := "/uploads/" + strings.TrimPrefix(cleanPath, "/")
 	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, publicPath)
 	if err == nil {
 		defer reader.Close()
 		c.Header("Content-Type", services.ContentTypeForObject(publicPath, info.ContentType))
-		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		if info.Size > 0 {
+			c.Header("Content-Length", strconv.FormatInt(info.Size, 10))
+		}
+		c.Header("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
+		if c.Request.Method == http.MethodHead {
+			c.Status(http.StatusOK)
+			return
+		}
 		_, _ = io.Copy(c.Writer, reader)
 		return
 	}
-	c.File(filepath.Join(effectiveCfg.StoragePath, "uploads", filepath.FromSlash(strings.TrimPrefix(cleanPath, "/"))))
+	c.Header("Cache-Control", "no-store")
+	c.Status(http.StatusNotFound)
 }
 
 func (h *Controller) GetPublicSettings(c *gin.Context) {
