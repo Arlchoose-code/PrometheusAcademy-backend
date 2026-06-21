@@ -20,6 +20,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 )
 
@@ -353,36 +354,29 @@ func OpenStoredPublicPath(ctx context.Context, db *gorm.DB, cfg config.Config, p
 	if db != nil {
 		var obj models.StoredObject
 		if err := db.WithContext(ctx).Where("legacy_path = ? OR object_key = ?", publicPath, key).Order("updated_at desc").First(&obj).Error; err == nil {
-			storage, err := newObjectStorageForStoredObject(ctx, effective, obj)
-			if err != nil {
-				return nil, ObjectInfo{}, err
-			}
-			reader, info, err := storage.Open(ctx, obj.ObjectKey)
-			if err == nil {
-				return reader, info, nil
-			}
-			if obj.StorageProvider == "r2" {
-				reader, info, localErr := (&LocalStorage{Root: effective.StoragePath}).Open(ctx, obj.ObjectKey)
-				if localErr == nil {
+			var lastErr error
+			storage, storageErr := newObjectStorageForStoredObject(ctx, effective, obj)
+			if storageErr == nil {
+				reader, info, openErr := storage.Open(ctx, obj.ObjectKey)
+				if openErr == nil {
 					return reader, info, nil
 				}
-				if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, obj.ObjectKey); backupErr == nil {
-					return backupReader, backupInfo, nil
-				}
+				lastErr = openErr
 			} else {
-				reader, info, r2Err := openR2PublicObject(ctx, effective, obj.ObjectKey)
-				if r2Err == nil {
-					_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{
-						"storage_provider": "r2",
-						"bucket":           effective.R2Bucket,
-					}).Error
-					return reader, info, nil
-				}
-				if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, obj.ObjectKey); backupErr == nil {
-					return backupReader, backupInfo, nil
-				}
+				lastErr = storageErr
+				log.Warn().Str("object_key", obj.ObjectKey).Str("provider", obj.StorageProvider).Err(storageErr).Msg("create storage client for stored object failed")
 			}
-			return nil, ObjectInfo{}, err
+			if localReader, localInfo, localErr := (&LocalStorage{Root: effective.StoragePath}).Open(ctx, obj.ObjectKey); localErr == nil {
+				return localReader, localInfo, nil
+			}
+			if r2Reader, r2Info, r2Err := openR2PublicObject(ctx, effective, obj.ObjectKey); r2Err == nil {
+				_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": effective.R2Bucket}).Error
+				return r2Reader, r2Info, nil
+			}
+			if backupReader, backupInfo, backupErr := openBackupR2Object(ctx, effective, obj.ObjectKey); backupErr == nil {
+				return backupReader, backupInfo, nil
+			}
+			return nil, ObjectInfo{}, fmt.Errorf("open stored object %s: %w", obj.ObjectKey, lastErr)
 		}
 	}
 	storage, _, err := NewConfiguredObjectStorage(ctx, db, cfg)

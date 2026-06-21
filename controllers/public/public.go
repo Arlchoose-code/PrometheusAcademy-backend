@@ -16,6 +16,7 @@ import (
 	"academyprometheus/backend/structs"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 )
 
@@ -62,6 +63,9 @@ func (h *Controller) ServeUpload(c *gin.Context) {
 	}
 	publicPath := "/uploads/" + strings.TrimPrefix(cleanPath, "/")
 	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, publicPath)
+	if err != nil {
+		log.Warn().Str("public_path", publicPath).Err(err).Msg("upload serve failed")
+	}
 	if err == nil {
 		defer reader.Close()
 		c.Header("Content-Type", services.ContentTypeForObject(publicPath, info.ContentType))
