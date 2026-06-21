@@ -95,6 +95,13 @@ func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest)
 		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
 			return models.User{}, TokenPair{}, nil, fmt.Errorf("auth register update pending user: %w", err)
 		}
+		configured, err := s.transactionalEmailConfigured(ctx)
+		if err != nil {
+			return models.User{}, TokenPair{}, nil, err
+		}
+		if !configured {
+			return s.completeAuthWithoutOTP(ctx, existing)
+		}
 		challenge, err := s.sendAuthOTP(ctx, existing, "register")
 		return existing, TokenPair{}, challenge, err
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -122,6 +129,13 @@ func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest)
 	if err := s.db.WithContext(ctx).Create(&user).Error; err != nil {
 		return models.User{}, TokenPair{}, nil, fmt.Errorf("auth register create user: %w", err)
 	}
+	configured, err := s.transactionalEmailConfigured(ctx)
+	if err != nil {
+		return models.User{}, TokenPair{}, nil, err
+	}
+	if !configured {
+		return s.completeAuthWithoutOTP(ctx, user)
+	}
 
 	challenge, err := s.sendAuthOTP(ctx, user, "register")
 	return user, TokenPair{}, challenge, err
@@ -139,11 +153,18 @@ func (s *AuthService) Login(ctx context.Context, req structs.LoginRequest) (mode
 	if err := CheckPassword(req.Password, user.Password); err != nil {
 		return models.User{}, TokenPair{}, nil, ErrInvalidCredentials
 	}
-	if user.EmailVerifiedAt == nil {
+	configured, err := s.transactionalEmailConfigured(ctx)
+	if err != nil {
+		return models.User{}, TokenPair{}, nil, err
+	}
+	if user.EmailVerifiedAt == nil && configured {
 		challenge, err := s.sendAuthOTP(ctx, user, "register")
 		return user, TokenPair{}, challenge, err
 	}
-	if s.needsLoginOTP(user) {
+	if user.EmailVerifiedAt == nil {
+		return s.completeAuthWithoutOTP(ctx, user)
+	}
+	if configured && s.needsLoginOTP(user) {
 		challenge, err := s.sendAuthOTP(ctx, user, "login")
 		return user, TokenPair{}, challenge, err
 	}
@@ -154,6 +175,30 @@ func (s *AuthService) Login(ctx context.Context, req structs.LoginRequest) (mode
 	}
 
 	return user, tokens, nil, nil
+}
+
+func (s *AuthService) transactionalEmailConfigured(ctx context.Context) (bool, error) {
+	settings, err := LoadMailerSettings(ctx, s.db)
+	if err != nil {
+		return false, fmt.Errorf("load auth mailer settings: %w", err)
+	}
+	return MailerDeliveryConfigured(settings), nil
+}
+
+func (s *AuthService) completeAuthWithoutOTP(ctx context.Context, user models.User) (models.User, TokenPair, *AuthOTPChallenge, error) {
+	now := time.Now()
+	if user.EmailVerifiedAt == nil {
+		if err := s.db.WithContext(ctx).Model(&user).Updates(map[string]any{
+			"email_verified_at": now,
+			"last_login_otp_at": now,
+		}).Error; err != nil {
+			return models.User{}, TokenPair{}, nil, fmt.Errorf("complete auth without otp: %w", err)
+		}
+		user.EmailVerifiedAt = &now
+		user.LastLoginOTPAt = &now
+	}
+	tokens, err := s.IssueTokenPair(user.ID, user.TokenVersion)
+	return user, tokens, nil, err
 }
 
 func (s *AuthService) IssueTokenPair(userID uint, tokenVersion int) (TokenPair, error) {

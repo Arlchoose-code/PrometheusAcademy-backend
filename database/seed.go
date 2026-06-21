@@ -81,25 +81,40 @@ func cleanupRemovedCompanySeedData(ctx context.Context, db *gorm.DB) error {
 }
 
 func seedUsers(ctx context.Context, db *gorm.DB) (models.User, models.User, error) {
-	hash, err := services.HashPassword("Prometheus123!")
+	hash, err := services.HashPassword("password")
 	if err != nil {
 		return models.User{}, models.User{}, fmt.Errorf("seed admin password: %w", err)
 	}
 	verifiedAt := time.Now()
 
 	admin := models.User{
-		Name:            "Prometheus Admin",
-		Email:           "admin@academyprometheus.com",
+		Name:            "Syahril Haryono",
+		Email:           "syhrlhyn1234@gmail.com",
 		Password:        hash,
 		Phone:           "+62 812 0000 0000",
-		IsStudent:       false,
+		IsStudent:       true,
 		IsAdmin:         true,
 		IsInstructor:    true,
 		Language:        "en",
 		EmailVerifiedAt: &verifiedAt,
 	}
-	if err := db.WithContext(ctx).Where(models.User{Email: admin.Email}).Assign(admin).FirstOrCreate(&admin).Error; err != nil {
+	if err := db.WithContext(ctx).Where(models.User{Email: admin.Email}).Attrs(admin).FirstOrCreate(&admin).Error; err != nil {
 		return admin, models.User{}, fmt.Errorf("seed admin user: %w", err)
+	}
+	ownerUpdates := map[string]any{
+		"is_admin":          true,
+		"is_student":        true,
+		"is_instructor":     true,
+		"email_verified_at": gorm.Expr("COALESCE(email_verified_at, ?)", verifiedAt),
+	}
+	if !admin.IsAdmin || !admin.IsStudent || !admin.IsInstructor {
+		ownerUpdates["password"] = hash
+	}
+	if err := db.WithContext(ctx).Model(&admin).Updates(ownerUpdates).Error; err != nil {
+		return admin, models.User{}, fmt.Errorf("ensure seed owner roles: %w", err)
+	}
+	if err := db.WithContext(ctx).First(&admin, admin.ID).Error; err != nil {
+		return admin, models.User{}, fmt.Errorf("reload seed owner: %w", err)
 	}
 
 	student := models.User{Name: "Nadia Putri", Email: "nadia@example.com", Password: hash, IsStudent: true, Language: "id", EmailVerifiedAt: &verifiedAt}

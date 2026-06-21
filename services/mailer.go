@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -30,6 +31,19 @@ type MailerSettings struct {
 	ContactLeadTag  string
 	BrevoAPIKey     string
 	BrevoAPIBaseURL string
+}
+
+// MailerDeliveryConfigured reports whether the active provider has enough
+// credentials to deliver transactional email.
+func MailerDeliveryConfigured(settings MailerSettings) bool {
+	switch strings.ToLower(strings.TrimSpace(settings.Provider)) {
+	case "brevo":
+		return strings.TrimSpace(settings.BrevoAPIKey) != ""
+	case "gohighlevel":
+		return strings.TrimSpace(settings.APIKey) != "" && strings.TrimSpace(settings.LocationID) != ""
+	default:
+		return false
+	}
 }
 
 type MailMessage struct {
@@ -222,6 +236,33 @@ func ListBrevoSenders(ctx context.Context, settings MailerSettings) ([]BrevoSend
 		})
 	}
 	return senders, nil
+}
+
+func DeleteBrevoSender(ctx context.Context, settings MailerSettings, senderID string) error {
+	if strings.TrimSpace(settings.BrevoAPIKey) == "" {
+		return fmt.Errorf("Brevo API key is not configured")
+	}
+	senderID = strings.TrimSpace(senderID)
+	if senderID == "" {
+		return fmt.Errorf("Brevo sender id is required")
+	}
+	baseURL := fallback(strings.TrimRight(strings.TrimSpace(settings.BrevoAPIBaseURL), "/"), defaultBrevoAPIBaseURL)
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/senders/"+url.PathEscape(senderID), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("api-key", strings.TrimSpace(settings.BrevoAPIKey))
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
+	if err != nil {
+		return fmt.Errorf("Brevo sender delete request failed: %w", err)
+	}
+	defer response.Body.Close()
+	responseRaw, _ := io.ReadAll(response.Body)
+	if response.StatusCode >= 300 && response.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("Brevo sender delete request failed (%d): %s", response.StatusCode, strings.TrimSpace(string(responseRaw)))
+	}
+	return nil
 }
 
 // SyncGHLContact upserts a platform user or lead into the configured HighLevel Location.

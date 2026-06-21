@@ -1051,13 +1051,27 @@ func (h *Controller) ListMailerSenders(c *gin.Context) {
 					ExternalID:     item.ID,
 					ExternalStatus: item.Status,
 				}
-				_ = h.db.WithContext(c.Request.Context()).Where("email = ?", sender.Email).Assign(sender).FirstOrCreate(&sender).Error
+				syncedValues := map[string]any{
+					"provider":        "brevo",
+					"name":            fallbackString(item.Name, item.Email),
+					"status":          "synced",
+					"external_id":     item.ID,
+					"external_status": item.Status,
+				}
+				query := h.db.WithContext(c.Request.Context()).Where("email = ?", sender.Email)
+				if err := query.FirstOrCreate(&sender).Error; err == nil {
+					_ = h.db.WithContext(c.Request.Context()).Model(&sender).Updates(syncedValues).Error
+				}
 			}
 		}
 	}
 	if strings.TrimSpace(settings.FromEmail) != "" {
 		sender := models.MailerSender{Provider: activeProvider, Name: settings.FromName, Email: strings.ToLower(settings.FromEmail), IsDefault: true, Status: "local", ExternalStatus: "default"}
 		_ = h.db.WithContext(c.Request.Context()).Where("email = ?", sender.Email).Attrs(sender).FirstOrCreate(&sender).Error
+		_ = h.db.WithContext(c.Request.Context()).Model(&models.MailerSender{}).
+			Where("provider IN ?", []string{"all", activeProvider}).Update("is_default", false).Error
+		_ = h.db.WithContext(c.Request.Context()).Model(&models.MailerSender{}).
+			Where("email = ?", sender.Email).Update("is_default", true).Error
 	}
 	var rows []models.MailerSender
 	if err := h.db.WithContext(c.Request.Context()).Where("provider IN ?", []string{"all", activeProvider}).Order("is_default desc, name asc").Find(&rows).Error; err != nil {
@@ -1125,7 +1139,31 @@ func (h *Controller) DeleteMailerSender(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid sender id"})
 		return
 	}
-	if err := h.db.WithContext(c.Request.Context()).Delete(&models.MailerSender{}, id).Error; err != nil {
+	var sender models.MailerSender
+	if err := h.db.WithContext(c.Request.Context()).First(&sender, uint(id)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Sender identity not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load sender"})
+		return
+	}
+	settings, err := services.LoadMailerSettings(c.Request.Context(), h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load mailer settings"})
+		return
+	}
+	if sender.IsDefault || strings.EqualFold(strings.TrimSpace(sender.Email), strings.TrimSpace(settings.FromEmail)) {
+		c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "Choose another default sender before deleting this sender"})
+		return
+	}
+	if strings.EqualFold(sender.Provider, "brevo") && strings.TrimSpace(sender.ExternalID) != "" {
+		if err := services.DeleteBrevoSender(c.Request.Context(), settings, sender.ExternalID); err != nil {
+			c.JSON(http.StatusBadGateway, structs.Response{Success: false, Message: err.Error()})
+			return
+		}
+	}
+	if err := h.db.WithContext(c.Request.Context()).Delete(&sender).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to delete sender"})
 		return
 	}
