@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,6 +292,33 @@ func NewConfiguredObjectStorage(ctx context.Context, db *gorm.DB, cfg config.Con
 
 func ObjectKeyFromPublicPath(publicPath string) string {
 	return strings.TrimLeft(filepath.ToSlash(strings.TrimSpace(publicPath)), "/")
+}
+
+func ContentTypeForObject(key, configured string) string {
+	configured = strings.TrimSpace(strings.ToLower(strings.Split(configured, ";")[0]))
+	if configured != "" && configured != "application/octet-stream" {
+		return configured
+	}
+	switch strings.ToLower(filepath.Ext(key)) {
+	case ".webp":
+		return "image/webp"
+	case ".avif":
+		return "image/avif"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	case ".pdf":
+		return "application/pdf"
+	}
+	if detected := mime.TypeByExtension(filepath.Ext(key)); detected != "" {
+		return detected
+	}
+	return "application/octet-stream"
 }
 
 func OpenStoredPublicPath(ctx context.Context, db *gorm.DB, cfg config.Config, publicPath string) (io.ReadCloser, ObjectInfo, error) {

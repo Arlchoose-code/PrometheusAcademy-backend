@@ -101,3 +101,14 @@ func TestLocalStorageRejectsTraversal(t *testing.T) {
 		t.Fatal("expected traversal rejection")
 	}
 }
+
+func TestContentTypeForLegacyWebPObject(t *testing.T) {
+	for _, configured := range []string{"", "application/octet-stream", "application/octet-stream; charset=binary"} {
+		if got := ContentTypeForObject("uploads/courses/course.webp", configured); got != "image/webp" {
+			t.Fatalf("configured %q resolved to %q, want image/webp", configured, got)
+		}
+	}
+	if got := ContentTypeForObject("uploads/courses/course.webp", "image/custom"); got != "image/custom" {
+		t.Fatalf("valid configured MIME was replaced: %q", got)
+	}
+}

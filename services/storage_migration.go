@@ -145,7 +145,7 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			RegisterStoredObject(ctx, db, cfg, StoredObject{Key: key, Provider: "local", Size: st.Size()}, p, filepath.Base(p), "", visibility, ownerScopeGuess(db, owner), class, owner, nil)
+			RegisterStoredObject(ctx, db, cfg, StoredObject{Key: key, Provider: "local", Size: st.Size()}, p, filepath.Base(p), ContentTypeForObject(key, ""), visibility, ownerScopeGuess(db, owner), class, owner, nil)
 		}
 		return nil
 	}
@@ -364,7 +364,8 @@ func ProcessStorageMigrationBatch(ctx context.Context, db *gorm.DB, cfg config.C
 			_ = db.WithContext(ctx).Model(&item).Updates(map[string]any{"status": "failed", "error_message": err.Error()}).Error
 			continue
 		}
-		stored, err := target.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: r, ContentType: obj.MimeType})
+		contentType := ContentTypeForObject(obj.ObjectKey, obj.MimeType)
+		stored, err := target.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: r, ContentType: contentType})
 		r.Close()
 		if err != nil {
 			_ = db.WithContext(ctx).Model(&item).Updates(map[string]any{"status": "failed", "error_message": err.Error()}).Error
@@ -375,7 +376,7 @@ func ProcessStorageMigrationBatch(ctx context.Context, db *gorm.DB, cfg config.C
 			_ = db.WithContext(ctx).Model(&item).Updates(map[string]any{"status": "failed", "error_message": "checksum mismatch", "target_checksum": checksum}).Error
 			continue
 		}
-		_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket, "checksum_sha256": checksum}).Error
+		_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket, "checksum_sha256": checksum, "mime_type": contentType}).Error
 		_ = db.WithContext(ctx).Model(&item).Updates(map[string]any{"status": "verified", "target_checksum": checksum}).Error
 	}
 	var pending, failed, verified int64
@@ -481,10 +482,11 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 			return models.StorageBackup{}, fmt.Errorf("verify backup object %s: %w", obj.ObjectKey, existsErr)
 		}
 		if exists {
+			obj.MimeType = ContentTypeForObject(obj.ObjectKey, obj.MimeType)
 			if backupCfg.R2Bucket == cfg.R2Bucket {
 				obj.StorageProvider = "r2"
 				obj.Bucket = cfg.R2Bucket
-				_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket}).Error
+				_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket, "mime_type": obj.MimeType}).Error
 			}
 			backedUpObjects = append(backedUpObjects, obj)
 			total += obj.SizeBytes
@@ -495,7 +497,8 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 			missingKeys = append(missingKeys, obj.ObjectKey)
 			continue
 		}
-		storedObject, putErr := storage.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: reader, ContentType: obj.MimeType})
+		contentType := ContentTypeForObject(obj.ObjectKey, obj.MimeType)
+		storedObject, putErr := storage.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: reader, ContentType: contentType})
 		reader.Close()
 		if putErr != nil {
 			return models.StorageBackup{}, fmt.Errorf("copy backup object %s: %w", obj.ObjectKey, putErr)
@@ -507,7 +510,8 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 		if backupCfg.R2Bucket == cfg.R2Bucket {
 			obj.StorageProvider = "r2"
 			obj.Bucket = cfg.R2Bucket
-			_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket, "checksum_sha256": storedObject.ChecksumSHA256}).Error
+			obj.MimeType = contentType
+			_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "r2", "bucket": cfg.R2Bucket, "checksum_sha256": storedObject.ChecksumSHA256, "mime_type": contentType}).Error
 		}
 		backedUpObjects = append(backedUpObjects, obj)
 		total += obj.SizeBytes

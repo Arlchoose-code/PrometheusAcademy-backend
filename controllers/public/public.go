@@ -65,9 +65,7 @@ func (h *Controller) ServeUpload(c *gin.Context) {
 	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, publicPath)
 	if err == nil {
 		defer reader.Close()
-		if info.ContentType != "" {
-			c.Header("Content-Type", info.ContentType)
-		}
+		c.Header("Content-Type", services.ContentTypeForObject(publicPath, info.ContentType))
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		_, _ = io.Copy(c.Writer, reader)
 		return
