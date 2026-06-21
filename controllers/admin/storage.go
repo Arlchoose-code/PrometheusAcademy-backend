@@ -160,3 +160,62 @@ func (h *Controller) ScanR2Objects(c *gin.Context) {
 	status, _ := services.GetStorageStatus(c.Request.Context(), h.db, h.cfg)
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: fmt.Sprintf("R2 scan completed: %d new objects registered", created), Data: status})
 }
+
+func (h *Controller) DiagnoseStorage(c *gin.Context) {
+	ctx := c.Request.Context()
+	effective := services.EffectiveStorageConfig(ctx, h.db, h.cfg)
+
+	diag := gin.H{
+		"active_provider":  effective.StorageProvider,
+		"r2_account_id":    effective.R2AccountID,
+		"r2_bucket":        effective.R2Bucket,
+		"r2_key_configured": effective.R2AccessKeyID != "",
+		"r2_secret_configured": effective.R2SecretAccessKey != "",
+		"storage_path":     effective.StoragePath,
+	}
+
+	var localCount, r2Count int64
+	h.db.WithContext(ctx).Model(&models.StoredObject{}).Where("storage_provider = ?", "local").Count(&localCount)
+	h.db.WithContext(ctx).Model(&models.StoredObject{}).Where("storage_provider = ?", "r2").Count(&r2Count)
+	diag["stored_local_count"] = localCount
+	diag["stored_r2_count"] = r2Count
+
+	var sample []models.StoredObject
+	h.db.WithContext(ctx).Order("id desc").Limit(5).Find(&sample)
+	sampleKeys := make([]gin.H, 0, len(sample))
+	for _, s := range sample {
+		sampleKeys = append(sampleKeys, gin.H{"object_key": s.ObjectKey, "legacy_path": s.LegacyPath, "provider": s.StorageProvider, "bucket": s.Bucket})
+	}
+	diag["sample_stored_objects"] = sampleKeys
+
+	if effective.R2Bucket != "" && effective.R2AccessKeyID != "" && effective.R2SecretAccessKey != "" && effective.R2AccountID != "" {
+		r2, err := services.NewR2Storage(ctx, effective, effective.R2Bucket, effective.R2AccessKeyID, effective.R2SecretAccessKey)
+		if err != nil {
+			diag["r2_connect_error"] = err.Error()
+		} else {
+			objects, listErr := r2.List(ctx, "")
+			if listErr != nil {
+				diag["r2_list_error"] = listErr.Error()
+			} else {
+				diag["r2_total_objects"] = len(objects)
+				r2Sample := make([]gin.H, 0, 5)
+				for i, obj := range objects {
+					if i >= 5 {
+						break
+					}
+					r2Sample = append(r2Sample, gin.H{"key": obj.Key, "size": obj.Size})
+				}
+				diag["r2_sample_keys"] = r2Sample
+
+				if len(sample) > 0 && len(objects) > 0 {
+					testKey := sample[0].ObjectKey
+					exists, _ := r2.Exists(ctx, testKey)
+					diag["test_key"] = testKey
+					diag["test_key_exists_in_r2"] = exists
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Storage diagnostic", Data: diag})
+}
