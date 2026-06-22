@@ -110,6 +110,23 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 	if db == nil {
 		return nil
 	}
+	// First pass: reset objects marked as R2 but whose files exist on local disk.
+	// This handles the case where a previous migration was incomplete — some files
+	// were copied to R2 and marked as "r2", but others were not actually copied.
+	var r2Objects []models.StoredObject
+	if err := db.WithContext(ctx).Where("storage_provider = ?", "r2").Find(&r2Objects).Error; err == nil {
+		resetCount := 0
+		for _, obj := range r2Objects {
+			full := StorageFilePath(cfg, "/"+obj.ObjectKey)
+			if _, err := os.Stat(full); err == nil {
+				_ = db.WithContext(ctx).Model(&obj).Updates(map[string]any{"storage_provider": "local", "bucket": ""}).Error
+				resetCount++
+			}
+		}
+		if resetCount > 0 {
+			log.Info().Int("reset_to_local", resetCount).Msg("inventory: reset R2-marked objects back to local (files exist on disk)")
+		}
+	}
 	collect := func(table, column, class, visibility string, ownerColumn string) error {
 		rows, err := db.WithContext(ctx).Table(table).Select("id, " + column + " AS path" + optionalOwnerSelect(ownerColumn)).Rows()
 		if err != nil {
