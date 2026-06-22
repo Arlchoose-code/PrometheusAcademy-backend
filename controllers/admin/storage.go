@@ -11,6 +11,7 @@ import (
 	"academyprometheus/backend/structs"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 )
 
 func (h *Controller) GetStorageStatus(c *gin.Context) {
@@ -162,7 +163,19 @@ func (h *Controller) ScanR2Objects(c *gin.Context) {
 }
 
 func (h *Controller) RepairBrokenPaths(c *gin.Context) {
-	results, err := services.RepairBrokenPaths(c.Request.Context(), h.db, h.cfg)
+	ctx := c.Request.Context()
+
+	scanCreated, scanErr := services.EnsureR2ObjectInventory(ctx, h.db, h.cfg)
+	if scanErr != nil {
+		log.Warn().Err(scanErr).Msg("repair: R2 scan failed (continuing)")
+	}
+
+	invErr := services.EnsureStoredObjectInventory(ctx, h.db, h.cfg)
+	if invErr != nil {
+		log.Warn().Err(invErr).Msg("repair: local inventory failed (continuing)")
+	}
+
+	results, err := services.RepairBrokenPaths(ctx, h.db, h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
 		return
@@ -171,8 +184,12 @@ func (h *Controller) RepairBrokenPaths(c *gin.Context) {
 	for _, r := range results {
 		totalFixed += r.Fixed
 	}
-	status, _ := services.GetStorageStatus(c.Request.Context(), h.db, h.cfg)
-	c.JSON(http.StatusOK, structs.Response{Success: true, Message: fmt.Sprintf("Repair completed: %d paths fixed", totalFixed), Data: gin.H{"results": results, "status": status}})
+	status, _ := services.GetStorageStatus(ctx, h.db, h.cfg)
+	c.JSON(http.StatusOK, structs.Response{
+		Success: true,
+		Message: fmt.Sprintf("Full repair: %d R2 objects scanned, %d paths fixed", scanCreated, totalFixed),
+		Data:    gin.H{"results": results, "status": status},
+	})
 }
 
 func (h *Controller) DiagnoseStorage(c *gin.Context) {

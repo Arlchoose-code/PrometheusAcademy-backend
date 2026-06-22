@@ -299,6 +299,22 @@ func RepairBrokenPaths(ctx context.Context, db *gorm.DB, cfg config.Config) ([]R
 		return nil, fmt.Errorf("connect R2: %w", err)
 	}
 
+	r2Files, err := r2.List(ctx, "uploads/")
+	if err != nil {
+		return nil, fmt.Errorf("list R2 uploads: %w", err)
+	}
+
+	filesByPrefix := map[string][]string{}
+	r2KeySet := map[string]bool{}
+	for _, f := range r2Files {
+		r2KeySet[f.Key] = true
+		parts := strings.SplitAfter(f.Key, "/")
+		if len(parts) >= 2 {
+			prefix := parts[0] + parts[1]
+			filesByPrefix[prefix] = append(filesByPrefix[prefix], f.Key)
+		}
+	}
+
 	type repairTarget struct {
 		table   string
 		column  string
@@ -320,33 +336,20 @@ func RepairBrokenPaths(ctx context.Context, db *gorm.DB, cfg config.Config) ([]R
 
 	var results []RepairResult
 	for _, t := range targets {
-		r2Files, err := r2.List(ctx, t.prefix)
-		if err != nil {
-			log.Warn().Str("prefix", t.prefix).Err(err).Msg("repair: failed to list R2 prefix")
-			continue
-		}
-		r2Keys := make(map[string]bool)
-		for _, f := range r2Files {
-			r2Keys[f.Key] = true
-		}
+		available := filesByPrefix[t.prefix]
+		availableIdx := 0
 
 		selectCols := "id, " + t.column + " AS path"
 		if t.ownerID != "" {
 			selectCols += ", " + t.ownerID + " AS owner_id"
 		}
-		rows, err := db.WithContext(ctx).Table(t.table).Select(selectCols).Rows()
+		rows, err := db.WithContext(ctx).Table(t.table).Select(selectCols).Where(t.column + " IS NOT NULL AND " + t.column + " != ''").Rows()
 		if err != nil {
 			log.Warn().Str("table", t.table).Err(err).Msg("repair: skip table")
 			continue
 		}
 
 		res := RepairResult{Entity: t.table}
-		availableIdx := 0
-		sortedFiles := make([]string, 0, len(r2Files))
-		for _, f := range r2Files {
-			sortedFiles = append(sortedFiles, f.Key)
-		}
-
 		for rows.Next() {
 			res.Total++
 			var id uint
@@ -363,31 +366,32 @@ func RepairBrokenPaths(ctx context.Context, db *gorm.DB, cfg config.Config) ([]R
 			}
 			p = strings.TrimSpace(p)
 			key := ObjectKeyFromPublicPath(p)
-
-			if p != "" && r2Keys[key] {
+			if key == "" {
+				continue
+			}
+			if r2KeySet[key] {
 				res.Skipped++
 				continue
 			}
-			if p != "" && key != "" {
-				_ = db.WithContext(ctx).Table(t.table).Where("id = ?", id).UpdateColumn(t.column, "").Error
-				res.Broken++
-			}
-
-			if availableIdx >= len(sortedFiles) {
+			res.Broken++
+			if availableIdx >= len(available) {
+				log.Warn().Str("table", t.table).Uint("id", id).Str("old_path", p).Msg("repair: no available file to assign")
 				continue
 			}
-			newKey := sortedFiles[availableIdx]
+			newKey := available[availableIdx]
 			availableIdx++
 			newPath := "/" + newKey
-
-			_ = db.WithContext(ctx).Table(t.table).Where("id = ?", id).UpdateColumn(t.column, newPath).Error
+			if err := db.WithContext(ctx).Table(t.table).Where("id = ?", id).UpdateColumn(t.column, newPath).Error; err != nil {
+				log.Error().Str("table", t.table).Uint("id", id).Err(err).Msg("repair: update failed")
+				continue
+			}
 			RegisterStoredObject(ctx, db, cfg, StoredObject{Key: newKey, Provider: "r2", Bucket: cfg.R2Bucket}, newPath, filepath.Base(newPath), ContentTypeForObject(newKey, ""), "public", "admin", t.class, 0, nil)
 			res.Fixed++
-			log.Info().Str("table", t.table).Uint("id", id).Str("old_path", p).Str("new_path", newPath).Msg("repair: path fixed")
+			log.Info().Str("table", t.table).Uint("id", id).Str("old", p).Str("new", newPath).Msg("repair: fixed")
 		}
 		rows.Close()
 		results = append(results, res)
-		log.Info().Str("table", t.table).Int("total", res.Total).Int("broken", res.Broken).Int("fixed", res.Fixed).Int("skipped", res.Skipped).Msg("repair: table done")
+		log.Info().Str("table", t.table).Int("total", res.Total).Int("broken", res.Broken).Int("fixed", res.Fixed).Int("skipped", res.Skipped).Msg("repair: done")
 	}
 	return results, nil
 }
