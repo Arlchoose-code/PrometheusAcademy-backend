@@ -284,6 +284,114 @@ func objectClassForKey(key string) string {
 	}
 }
 
+type RepairResult struct {
+	Entity  string `json:"entity"`
+	Total   int    `json:"total"`
+	Broken  int    `json:"broken"`
+	Fixed   int    `json:"fixed"`
+	Skipped int    `json:"skipped"`
+}
+
+func RepairBrokenPaths(ctx context.Context, db *gorm.DB, cfg config.Config) ([]RepairResult, error) {
+	cfg = EffectiveStorageConfig(ctx, db, cfg)
+	r2, err := NewR2Storage(ctx, cfg, cfg.R2Bucket, cfg.R2AccessKeyID, cfg.R2SecretAccessKey)
+	if err != nil {
+		return nil, fmt.Errorf("connect R2: %w", err)
+	}
+
+	type repairTarget struct {
+		table   string
+		column  string
+		prefix  string
+		class   string
+		ownerID string
+	}
+	targets := []repairTarget{
+		{"courses", "thumbnail", "uploads/courses/", "course_thumbnail", "instructor_id"},
+		{"products", "thumbnail", "uploads/products/", "product_thumbnail", ""},
+		{"partners", "logo", "uploads/partners/", "partner_logo", ""},
+		{"testimonials", "avatar", "uploads/avatars/", "testimonial_avatar", "user_id"},
+		{"users", "avatar", "uploads/avatars/", "avatar", "id"},
+		{"banners", "image_path", "uploads/banners/", "banner", ""},
+		{"pages", "image_path", "uploads/pages/", "cms_image", ""},
+		{"page_sections", "image_path", "uploads/pages/", "cms_image", ""},
+		{"media_files", "file_path", "uploads/media/", "media", "uploaded_by"},
+	}
+
+	var results []RepairResult
+	for _, t := range targets {
+		r2Files, err := r2.List(ctx, t.prefix)
+		if err != nil {
+			log.Warn().Str("prefix", t.prefix).Err(err).Msg("repair: failed to list R2 prefix")
+			continue
+		}
+		r2Keys := make(map[string]bool)
+		for _, f := range r2Files {
+			r2Keys[f.Key] = true
+		}
+
+		selectCols := "id, " + t.column + " AS path"
+		if t.ownerID != "" {
+			selectCols += ", " + t.ownerID + " AS owner_id"
+		}
+		rows, err := db.WithContext(ctx).Table(t.table).Select(selectCols).Rows()
+		if err != nil {
+			log.Warn().Str("table", t.table).Err(err).Msg("repair: skip table")
+			continue
+		}
+
+		res := RepairResult{Entity: t.table}
+		availableIdx := 0
+		sortedFiles := make([]string, 0, len(r2Files))
+		for _, f := range r2Files {
+			sortedFiles = append(sortedFiles, f.Key)
+		}
+
+		for rows.Next() {
+			res.Total++
+			var id uint
+			var p string
+			var ownerID uint
+			if t.ownerID != "" {
+				if err := rows.Scan(&id, &p, &ownerID); err != nil {
+					continue
+				}
+			} else {
+				if err := rows.Scan(&id, &p); err != nil {
+					continue
+				}
+			}
+			p = strings.TrimSpace(p)
+			key := ObjectKeyFromPublicPath(p)
+
+			if p != "" && r2Keys[key] {
+				res.Skipped++
+				continue
+			}
+			if p != "" && key != "" {
+				_ = db.WithContext(ctx).Table(t.table).Where("id = ?", id).UpdateColumn(t.column, "").Error
+				res.Broken++
+			}
+
+			if availableIdx >= len(sortedFiles) {
+				continue
+			}
+			newKey := sortedFiles[availableIdx]
+			availableIdx++
+			newPath := "/" + newKey
+
+			_ = db.WithContext(ctx).Table(t.table).Where("id = ?", id).UpdateColumn(t.column, newPath).Error
+			RegisterStoredObject(ctx, db, cfg, StoredObject{Key: newKey, Provider: "r2", Bucket: cfg.R2Bucket}, newPath, filepath.Base(newPath), ContentTypeForObject(newKey, ""), "public", "admin", t.class, 0, nil)
+			res.Fixed++
+			log.Info().Str("table", t.table).Uint("id", id).Str("old_path", p).Str("new_path", newPath).Msg("repair: path fixed")
+		}
+		rows.Close()
+		results = append(results, res)
+		log.Info().Str("table", t.table).Int("total", res.Total).Int("broken", res.Broken).Int("fixed", res.Fixed).Int("skipped", res.Skipped).Msg("repair: table done")
+	}
+	return results, nil
+}
+
 func optionalOwnerSelect(ownerColumn string) string {
 	if ownerColumn == "" {
 		return ""

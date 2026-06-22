@@ -161,6 +161,20 @@ func (h *Controller) ScanR2Objects(c *gin.Context) {
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: fmt.Sprintf("R2 scan completed: %d new objects registered", created), Data: status})
 }
 
+func (h *Controller) RepairBrokenPaths(c *gin.Context) {
+	results, err := services.RepairBrokenPaths(c.Request.Context(), h.db, h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: err.Error()})
+		return
+	}
+	totalFixed := 0
+	for _, r := range results {
+		totalFixed += r.Fixed
+	}
+	status, _ := services.GetStorageStatus(c.Request.Context(), h.db, h.cfg)
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: fmt.Sprintf("Repair completed: %d paths fixed", totalFixed), Data: gin.H{"results": results, "status": status}})
+}
+
 func (h *Controller) DiagnoseStorage(c *gin.Context) {
 	ctx := c.Request.Context()
 	effective := services.EffectiveStorageConfig(ctx, h.db, h.cfg)
