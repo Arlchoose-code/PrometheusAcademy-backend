@@ -241,19 +241,23 @@ type R2ObjectSummary struct {
 func (s *R2Storage) List(ctx context.Context, prefix string) ([]R2ObjectSummary, error) {
 	var all []R2ObjectSummary
 	var contToken *string
+	page := 0
 	for {
+		page++
 		out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: aws.String(prefix), ContinuationToken: contToken})
 		if err != nil {
-			return all, err
+			return all, fmt.Errorf("list R2 page %d: %w", page, err)
 		}
 		for _, obj := range out.Contents {
 			all = append(all, R2ObjectSummary{Key: aws.ToString(obj.Key), Size: aws.ToInt64(obj.Size), LastModified: aws.ToTime(obj.LastModified)})
 		}
+		log.Debug().Int("page", page).Int("page_count", len(out.Contents)).Int("total_so_far", len(all)).Bool("truncated", aws.ToBool(out.IsTruncated)).Msg("R2 list page")
 		if !aws.ToBool(out.IsTruncated) {
 			break
 		}
 		contToken = out.NextContinuationToken
 	}
+	log.Info().Int("total_objects", len(all)).Str("prefix", prefix).Msg("R2 list completed")
 	return all, nil
 }
 func optionalString(v string) *string {

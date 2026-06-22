@@ -17,6 +17,7 @@ import (
 	"academyprometheus/backend/config"
 	"academyprometheus/backend/models"
 
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 )
 
@@ -112,10 +113,13 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 	collect := func(table, column, class, visibility string, ownerColumn string) error {
 		rows, err := db.WithContext(ctx).Table(table).Select("id, " + column + " AS path" + optionalOwnerSelect(ownerColumn)).Rows()
 		if err != nil {
-			return err
+			log.Warn().Str("table", table).Err(err).Msg("inventory: skip table (query failed)")
+			return nil
 		}
 		defer rows.Close()
+		scanned, skippedEmpty, skippedNoPrefix, skippedStat, skippedExisting, registered := 0, 0, 0, 0, 0, 0
 		for rows.Next() {
+			scanned++
 			var id, owner uint
 			var p string
 			if ownerColumn == "" {
@@ -128,25 +132,33 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 				}
 			}
 			p = strings.TrimSpace(p)
-			if p == "" || !strings.HasPrefix(p, "/uploads/") {
+			if p == "" {
+				skippedEmpty++
+				continue
+			}
+			if !strings.HasPrefix(p, "/uploads/") {
+				skippedNoPrefix++
 				continue
 			}
 			key := ObjectKeyFromPublicPath(p)
 			full := StorageFilePath(cfg, p)
 			st, err := os.Stat(full)
 			if err != nil {
+				skippedStat++
+				log.Debug().Str("table", table).Str("path", p).Str("disk_path", full).Err(err).Msg("inventory: file not found on disk")
 				continue
 			}
 			var existing models.StoredObject
 			if err := db.WithContext(ctx).Select("id").Where("object_key = ?", key).First(&existing).Error; err == nil {
-				// Inventory discovery must not downgrade an object already migrated
-				// to R2 merely because its original local copy still exists.
+				skippedExisting++
 				continue
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
 			RegisterStoredObject(ctx, db, cfg, StoredObject{Key: key, Provider: "local", Size: st.Size()}, p, filepath.Base(p), ContentTypeForObject(key, ""), visibility, ownerScopeGuess(db, owner), class, owner, nil)
+			registered++
 		}
+		log.Info().Str("table", table).Int("scanned", scanned).Int("registered", registered).Int("skipped_stat", skippedStat).Int("skipped_existing", skippedExisting).Int("skipped_no_prefix", skippedNoPrefix).Msg("inventory: table done")
 		return nil
 	}
 	for _, item := range []struct{ table, column, class, visibility, owner string }{
@@ -168,7 +180,9 @@ func EnsureStoredObjectInventory(ctx context.Context, db *gorm.DB, cfg config.Co
 		{"invoices", "file_path", "generated", "protected", ""},
 		{"certificates", "certificate_url", "generated", "protected", "user_id"},
 	} {
-		_ = collect(item.table, item.column, item.class, item.visibility, item.owner)
+		if err := collect(item.table, item.column, item.class, item.visibility, item.owner); err != nil {
+			log.Error().Str("table", item.table).Err(err).Msg("inventory: table collection failed")
+		}
 	}
 	return nil
 }
