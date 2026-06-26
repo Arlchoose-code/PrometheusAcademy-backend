@@ -214,6 +214,14 @@ func productSummary(ctx context.Context, db *gorm.DB, product models.Product) (g
 		Scan(&ratingRow).Error; err != nil {
 		return nil, err
 	}
+	var purchasedCount int64
+	if err := db.WithContext(ctx).
+		Table("order_items").
+		Joins("JOIN orders ON orders.id = order_items.order_id").
+		Where("order_items.item_type = ? AND order_items.item_id = ? AND orders.status = ?", "product", product.ID, "success").
+		Count(&purchasedCount).Error; err != nil {
+		return nil, err
+	}
 	return gin.H{
 		"id":                    product.ID,
 		"title_en":              product.TitleEn,
@@ -237,6 +245,8 @@ func productSummary(ctx context.Context, db *gorm.DB, product models.Product) (g
 		"requires_booking_time": category.RequiresBookingTime,
 		"rating":                ratingRow.Average,
 		"reviews_count":         ratingRow.Count,
+		"joined_count":          purchasedCount,
+		"completed_count":       0,
 	}, nil
 }
 

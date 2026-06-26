@@ -19,15 +19,17 @@ type HomepageStats struct {
 }
 
 type HomepageCourse struct {
-	ID            uint   `json:"id"`
-	TitleEn       string `json:"title_en"`
-	TitleID       string `json:"title_id"`
-	Slug          string `json:"slug"`
-	DescriptionEn string `json:"description_en"`
-	DescriptionID string `json:"description_id"`
-	Thumbnail     string `json:"thumbnail"`
-	Price         int    `json:"price"`
-	IsFree        bool   `json:"is_free"`
+	ID             uint   `json:"id"`
+	TitleEn        string `json:"title_en"`
+	TitleID        string `json:"title_id"`
+	Slug           string `json:"slug"`
+	DescriptionEn  string `json:"description_en"`
+	DescriptionID  string `json:"description_id"`
+	Thumbnail      string `json:"thumbnail"`
+	Price          int    `json:"price"`
+	IsFree         bool   `json:"is_free"`
+	JoinedCount    int64  `json:"joined_count"`
+	CompletedCount int64  `json:"completed_count"`
 }
 
 type HomepageProduct struct {
@@ -43,6 +45,8 @@ type HomepageProduct struct {
 	CategorySlug   string `json:"category_slug"`
 	CategoryNameEn string `json:"category_name_en"`
 	CategoryNameID string `json:"category_name_id"`
+	JoinedCount    int64  `json:"joined_count"`
+	CompletedCount int64  `json:"completed_count"`
 }
 
 type HomepageKnowledgeCategory struct {
@@ -59,6 +63,7 @@ type HomepageTestimonial struct {
 	ContentEn string `json:"content_en"`
 	ContentID string `json:"content_id"`
 	Rating    int    `json:"rating"`
+	SourceURL string `json:"source_url"`
 }
 
 type HomepagePartner struct {
@@ -250,16 +255,26 @@ func (s *homepageService) loadCourses(ctx context.Context, data *HomepageData) e
 		return fmt.Errorf("homepage courses: %w", err)
 	}
 	for _, course := range courses {
+		var joined int64
+		var completed int64
+		if err := s.db.WithContext(ctx).Model(&models.CourseEnrollment{}).Where("course_id = ?", course.ID).Count(&joined).Error; err != nil {
+			return fmt.Errorf("homepage course joined count: %w", err)
+		}
+		if err := s.db.WithContext(ctx).Model(&models.CourseEnrollment{}).Where("course_id = ? AND completed_at IS NOT NULL", course.ID).Count(&completed).Error; err != nil {
+			return fmt.Errorf("homepage course completed count: %w", err)
+		}
 		data.Courses = append(data.Courses, HomepageCourse{
-			ID:            course.ID,
-			TitleEn:       course.TitleEn,
-			TitleID:       course.TitleID,
-			Slug:          course.Slug,
-			DescriptionEn: course.DescriptionEn,
-			DescriptionID: course.DescriptionID,
-			Thumbnail:     course.Thumbnail,
-			Price:         course.Price,
-			IsFree:        course.IsFree,
+			ID:             course.ID,
+			TitleEn:        course.TitleEn,
+			TitleID:        course.TitleID,
+			Slug:           course.Slug,
+			DescriptionEn:  course.DescriptionEn,
+			DescriptionID:  course.DescriptionID,
+			Thumbnail:      course.Thumbnail,
+			Price:          course.Price,
+			IsFree:         course.IsFree,
+			JoinedCount:    joined,
+			CompletedCount: completed,
 		})
 	}
 	return nil
@@ -297,6 +312,14 @@ func (s *homepageService) loadProducts(ctx context.Context, data *HomepageData) 
 	}
 	for _, product := range products {
 		category := categories[product.CategoryID]
+		var purchased int64
+		if err := s.db.WithContext(ctx).
+			Table("order_items").
+			Joins("JOIN orders ON orders.id = order_items.order_id").
+			Where("order_items.item_type = ? AND order_items.item_id = ? AND orders.status = ?", "product", product.ID, "success").
+			Count(&purchased).Error; err != nil {
+			return fmt.Errorf("homepage product purchased count: %w", err)
+		}
 		data.Products = append(data.Products, HomepageProduct{
 			ID:             product.ID,
 			TitleEn:        product.TitleEn,
@@ -310,6 +333,8 @@ func (s *homepageService) loadProducts(ctx context.Context, data *HomepageData) 
 			CategorySlug:   category.Slug,
 			CategoryNameEn: category.NameEn,
 			CategoryNameID: category.NameID,
+			JoinedCount:    purchased,
+			CompletedCount: 0,
 		})
 	}
 	return nil
@@ -329,6 +354,7 @@ func (s *homepageService) loadTestimonials(ctx context.Context, data *HomepageDa
 			ContentEn: testimonial.ContentEn,
 			ContentID: testimonial.ContentID,
 			Rating:    testimonial.Rating,
+			SourceURL: testimonial.SourceURL,
 		})
 	}
 	return nil

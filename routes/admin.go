@@ -225,6 +225,10 @@ func registerTalentAdminRoutes(admin *gin.RouterGroup, adminController *admincon
 	admin.POST("/talent/jobs", adminController.CreateTalentJob)
 	admin.PUT("/talent/jobs/:id", adminController.UpdateTalentJob)
 	admin.DELETE("/talent/jobs/:id", adminController.DeleteTalentJob)
+	admin.GET("/talent/trust-photos", adminController.ListTalentTrustPhotos)
+	admin.POST("/talent/trust-photos", adminController.CreateTalentTrustPhoto)
+	admin.PUT("/talent/trust-photos/:id", adminController.UpdateTalentTrustPhoto)
+	admin.DELETE("/talent/trust-photos/:id", adminController.DeleteTalentTrustPhoto)
 
 	admin.GET("/talent/hiring", adminController.ListHiringInquiries)
 	admin.PUT("/talent/hiring/:id", adminController.UpdateHiringInquiry)

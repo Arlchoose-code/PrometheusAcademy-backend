@@ -40,6 +40,8 @@ func RegisterPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Confi
 func registerTalentPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Config, uploadService *services.UploadService) {
 	publicController := publiccontroller.NewController(db, cfg, uploadService)
 	router.GET("/talent/landing", publicController.GetTalentLanding)
+	router.GET("/talent/jobs", publicController.ListTalentJobs)
+	router.GET("/talent/jobs/:slug", publicController.GetTalentJob)
 	router.POST("/talent/hiring", publicController.CreateHiringInquiry)
 	router.POST("/talent/plus", publicController.CreateTalentPlusApplication)
 	router.GET("/talent/review-invitations/:token", publicController.GetTalentReviewInvitation)

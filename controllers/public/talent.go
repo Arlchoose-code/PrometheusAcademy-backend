@@ -1,6 +1,10 @@
 package public
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +14,7 @@ import (
 	"academyprometheus/backend/structs"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func (h *Controller) GetTalentLanding(c *gin.Context) {
@@ -17,7 +22,7 @@ func (h *Controller) GetTalentLanding(c *gin.Context) {
 	for _, source := range []string{"google", "student"} {
 		var sourceReviews []models.Testimonial
 		_ = h.db.WithContext(c.Request.Context()).
-			Where("is_active = ? AND review_status = ? AND display_context IN ? AND review_source = ?", true, "approved", []string{"talent_bridge", "all"}, source).
+			Where("is_active = ? AND review_status = ? AND display_context = ? AND review_source = ?", true, "approved", "talent_bridge", source).
 			Order("created_at desc").
 			Limit(2).
 			Find(&sourceReviews).Error
@@ -29,7 +34,7 @@ func (h *Controller) GetTalentLanding(c *gin.Context) {
 			selectedIDs = append(selectedIDs, testimonial.ID)
 		}
 		query := h.db.WithContext(c.Request.Context()).
-			Where("is_active = ? AND review_status = ? AND display_context IN ?", true, "approved", []string{"talent_bridge", "all"})
+			Where("is_active = ? AND review_status = ? AND display_context = ?", true, "approved", "talent_bridge")
 		if len(selectedIDs) > 0 {
 			query = query.Where("id NOT IN ?", selectedIDs)
 		}
@@ -44,14 +49,20 @@ func (h *Controller) GetTalentLanding(c *gin.Context) {
 	_ = h.db.WithContext(c.Request.Context()).
 		Model(&models.Testimonial{}).
 		Select("COALESCE(AVG(rating), 0) AS average, COUNT(*) AS count").
-		Where("is_active = ? AND review_status = ? AND display_context IN ?", true, "approved", []string{"talent_bridge", "all"}).
+		Where("is_active = ? AND review_status = ? AND display_context = ?", true, "approved", "talent_bridge").
 		Scan(&reviewStats).Error
 	var googleCount int64
 	var studentCount int64
-	_ = h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("is_active = ? AND review_status = ? AND display_context IN ? AND review_source = ?", true, "approved", []string{"talent_bridge", "all"}, "google").Count(&googleCount).Error
-	_ = h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("is_active = ? AND review_status = ? AND display_context IN ? AND review_source = ?", true, "approved", []string{"talent_bridge", "all"}, "student").Count(&studentCount).Error
+	_ = h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("is_active = ? AND review_status = ? AND display_context = ? AND review_source = ?", true, "approved", "talent_bridge", "google").Count(&googleCount).Error
+	_ = h.db.WithContext(c.Request.Context()).Model(&models.Testimonial{}).Where("is_active = ? AND review_status = ? AND display_context = ? AND review_source = ?", true, "approved", "talent_bridge", "student").Count(&studentCount).Error
 	var jobs []models.TalentJob
 	_ = h.db.WithContext(c.Request.Context()).Where("status = ?", "open").Order("created_at desc").Limit(3).Find(&jobs).Error
+	var trustPhotos []models.TalentTrustPhoto
+	_ = h.db.WithContext(c.Request.Context()).
+		Where("is_active = ? AND image_path <> ?", true, "").
+		Order("`order` asc, created_at desc").
+		Limit(6).
+		Find(&trustPhotos).Error
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge data loaded", Data: gin.H{
 		"testimonials": testimonials,
 		"review_summary": gin.H{
@@ -62,7 +73,8 @@ func (h *Controller) GetTalentLanding(c *gin.Context) {
 				"student": studentCount,
 			},
 		},
-		"jobs": jobs,
+		"jobs":         jobs,
+		"trust_photos": trustPhotos,
 	}})
 }
 
@@ -89,11 +101,67 @@ func (h *Controller) CreateHiringInquiry(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit hiring inquiry"})
 		return
 	}
+	h.ensureCompanyPortalInvite(c.Request.Context(), req)
 	h.sendTalentConfirmation(c, services.EmailTemplateHiringInquiry, "hiring_inquiry_received", req.FirstName+" "+req.LastName, req.WorkEmail, map[string]string{
 		"company_name": req.CompanyName,
 		"roles_needed": req.RolesNeeded,
 	})
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Hiring inquiry submitted", Data: req})
+}
+
+func (h *Controller) ensureCompanyPortalInvite(ctx context.Context, inquiry models.HiringInquiry) {
+	email := strings.ToLower(strings.TrimSpace(inquiry.WorkEmail))
+	if email == "" {
+		return
+	}
+	now := time.Now()
+	var user models.User
+	if err := h.db.WithContext(ctx).Where("LOWER(email) = ?", email).First(&user).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return
+		}
+		password, err := randomCompanyPortalPassword()
+		if err != nil {
+			return
+		}
+		hash, err := services.HashPassword(password)
+		if err != nil {
+			return
+		}
+		name := strings.TrimSpace(inquiry.FirstName + " " + inquiry.LastName)
+		if name == "" {
+			name = inquiry.CompanyName
+		}
+		user = models.User{
+			Name:            name,
+			Email:           email,
+			Password:        hash,
+			IsStudent:       true,
+			Language:        "en",
+			EmailVerifiedAt: &now,
+		}
+		if err := h.db.WithContext(ctx).Create(&user).Error; err != nil {
+			return
+		}
+	}
+	locale := user.Language
+	if locale != "id" {
+		locale = "en"
+	}
+	companyDashboardURL := strings.TrimRight(h.cfg.FrontendURL, "/") + "/" + locale + "/talent-bridge/company-dashboard"
+	_, _ = services.CreatePasswordResetInvitation(ctx, h.db, h.cfg, user, services.EmailTemplateCompanyPortalInvite, "company_portal_invite", map[string]string{
+		"company_name":          inquiry.CompanyName,
+		"roles_needed":          inquiry.RolesNeeded,
+		"company_dashboard_url": companyDashboardURL,
+	})
+}
+
+func randomCompanyPortalPassword() (string, error) {
+	buffer := make([]byte, 32)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buffer), nil
 }
 
 func (h *Controller) CreateTalentPlusApplication(c *gin.Context) {
@@ -214,7 +282,73 @@ func (h *Controller) GetTalentJob(c *gin.Context) {
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Job loaded", Data: job})
 }
 
+func (h *Controller) GetCompanyTalentDashboard(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	email := strings.ToLower(strings.TrimSpace(user.Email))
+	var inquiries []models.HiringInquiry
+	if err := h.db.WithContext(c.Request.Context()).
+		Where("LOWER(work_email) = ?", email).
+		Order("created_at desc").
+		Find(&inquiries).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load company dashboard"})
+		return
+	}
+	if len(inquiries) == 0 {
+		c.JSON(http.StatusForbidden, structs.Response{Success: false, Code: "company_inquiry_required", Message: "Submit an I'm Hiring inquiry with this work email before opening the company dashboard"})
+		return
+	}
+
+	var hiredCount int
+	var requestedHeadcount int
+	activeRequests := 0
+	for _, inquiry := range inquiries {
+		requestedHeadcount += inquiry.Headcount
+		switch strings.ToLower(inquiry.Status) {
+		case "resolved", "won", "completed", "hired":
+			hiredCount += inquiry.Headcount
+		case "new", "contacted", "in_progress", "qualified":
+			activeRequests++
+		}
+	}
+
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Company dashboard loaded", Data: gin.H{
+		"company_name":        companyDashboardName(inquiries),
+		"hired_count":         hiredCount,
+		"requested_headcount": requestedHeadcount,
+		"active_requests":     activeRequests,
+		"inquiries":           inquiries,
+		"employee_profiles":   []gin.H{},
+		"timesheet_approvals": []gin.H{},
+	}})
+}
+
+func (h *Controller) GetTalentApplyEligibility(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	enrolledCount, completedCount, eligible, err := h.talentApplyEligibility(c.Request.Context(), user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load Talent Bridge eligibility"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge eligibility loaded", Data: gin.H{
+		"eligible":        eligible || user.IsAdmin,
+		"enrolled_count":  enrolledCount,
+		"completed_count": completedCount,
+	}})
+}
+
 func (h *Controller) CreateTalentJobApplication(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	if !user.IsAdmin {
+		_, _, eligible, err := h.talentApplyEligibility(c.Request.Context(), user.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check Talent Bridge eligibility"})
+			return
+		}
+		if !eligible {
+			c.JSON(http.StatusForbidden, structs.Response{Success: false, Code: "talent_course_required", Message: "Enroll in a Prometheus course before applying to Talent Bridge jobs"})
+			return
+		}
+	}
 	var job models.TalentJob
 	if err := h.db.WithContext(c.Request.Context()).Where("slug = ? AND status = ?", c.Param("slug"), "open").First(&job).Error; err != nil {
 		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Job not found"})
@@ -241,6 +375,27 @@ func (h *Controller) CreateTalentJobApplication(c *gin.Context) {
 		"application_type": job.TitleEn,
 	})
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Application submitted", Data: application})
+}
+
+func (h *Controller) talentApplyEligibility(ctx context.Context, userID uint) (int64, int64, bool, error) {
+	var enrolledCount int64
+	if err := h.db.WithContext(ctx).Model(&models.CourseEnrollment{}).Where("user_id = ?", userID).Count(&enrolledCount).Error; err != nil {
+		return 0, 0, false, err
+	}
+	var completedCount int64
+	if err := h.db.WithContext(ctx).Model(&models.CourseEnrollment{}).Where("user_id = ? AND completed_at IS NOT NULL", userID).Count(&completedCount).Error; err != nil {
+		return 0, 0, false, err
+	}
+	return enrolledCount, completedCount, enrolledCount > 0, nil
+}
+
+func companyDashboardName(inquiries []models.HiringInquiry) string {
+	for _, inquiry := range inquiries {
+		if strings.TrimSpace(inquiry.CompanyName) != "" {
+			return inquiry.CompanyName
+		}
+	}
+	return ""
 }
 
 func (h *Controller) sendTalentConfirmation(c *gin.Context, settingKey string, fallbackKey string, name string, email string, variables map[string]string) {

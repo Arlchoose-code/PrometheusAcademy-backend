@@ -37,6 +37,8 @@ func RegisterDashboardRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Co
 	protected.POST("/communications/:id/messages", dashboardController.ReplyCommunication)
 	protected.GET("/notifications", dashboardController.ListNotifications)
 	protected.POST("/notifications/mark-all-read", dashboardController.MarkAllNotificationsRead)
+	protected.GET("/talent/company-dashboard", publicController.GetCompanyTalentDashboard)
+	protected.GET("/talent/apply-eligibility", publicController.GetTalentApplyEligibility)
 
 	student := router.Group("")
 	student.Use(middlewares.AuthGuard(db, cfg), middlewares.RoleGuard("student", "admin"))
@@ -49,7 +51,5 @@ func RegisterDashboardRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config.Co
 	student.POST("/assignments/:id/submit", dashboardController.SubmitAssignment)
 	student.POST("/events/:id/attend", dashboardController.AttendEvent)
 	student.GET("/certificates/:uuid/download", dashboardController.DownloadCertificate)
-	student.GET("/talent/jobs", publicController.ListTalentJobs)
-	student.GET("/talent/jobs/:slug", publicController.GetTalentJob)
 	student.POST("/talent/jobs/:slug/apply", publicController.CreateTalentJobApplication)
 }

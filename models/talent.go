@@ -23,6 +23,16 @@ type TalentJobApplication struct {
 	AppliedAt time.Time `gorm:"not null" json:"applied_at"`
 }
 
+type TalentTrustPhoto struct {
+	BaseModel
+	TitleEn   string `gorm:"size:191;not null" json:"title_en"`
+	TitleID   string `gorm:"size:191;not null" json:"title_id"`
+	Category  string `gorm:"size:60;not null;default:'general';index" json:"category"`
+	ImagePath string `gorm:"size:255;not null" json:"image_path"`
+	Order     int    `gorm:"not null;default:0;index" json:"order"`
+	IsActive  bool   `gorm:"not null;default:true;index" json:"is_active"`
+}
+
 type HiringInquiry struct {
 	BaseModel
 	FirstName   string `gorm:"size:100;not null" json:"first_name"`

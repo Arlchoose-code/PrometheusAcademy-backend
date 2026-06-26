@@ -72,6 +72,70 @@ func (h *Controller) DeleteTalentJob(c *gin.Context) {
 	deleteRow[models.TalentJob](h.db, "Talent job deleted")(c)
 }
 
+func (h *Controller) ListTalentTrustPhotos(c *gin.Context) {
+	listRows[models.TalentTrustPhoto](h.db, "`order` asc, created_at desc", "Talent Bridge trust photos loaded")(c)
+}
+
+func (h *Controller) CreateTalentTrustPhoto(c *gin.Context) {
+	var photo models.TalentTrustPhoto
+	if err := c.ShouldBindJSON(&photo); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid trust photo payload"})
+		return
+	}
+	normalizeTalentTrustPhoto(&photo)
+	if photo.TitleEn == "" || photo.ImagePath == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Title EN and image are required"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).Create(&photo).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create trust photo"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge trust photo created", Data: photo})
+}
+
+func (h *Controller) UpdateTalentTrustPhoto(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid trust photo id"})
+		return
+	}
+	var photo models.TalentTrustPhoto
+	if err := c.ShouldBindJSON(&photo); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid trust photo payload"})
+		return
+	}
+	normalizeTalentTrustPhoto(&photo)
+	if photo.TitleEn == "" || photo.ImagePath == "" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Title EN and image are required"})
+		return
+	}
+	if err := h.db.WithContext(c.Request.Context()).
+		Model(&models.TalentTrustPhoto{}).
+		Where("id = ?", uint(id)).
+		Select("title_en", "title_id", "category", "image_path", "`order`", "is_active").
+		Updates(photo).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save trust photo"})
+		return
+	}
+	photo.ID = uint(id)
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge trust photo saved", Data: photo})
+}
+
+func (h *Controller) DeleteTalentTrustPhoto(c *gin.Context) {
+	deleteRow[models.TalentTrustPhoto](h.db, "Talent Bridge trust photo deleted")(c)
+}
+
+func normalizeTalentTrustPhoto(photo *models.TalentTrustPhoto) {
+	photo.TitleEn = strings.TrimSpace(photo.TitleEn)
+	photo.TitleID = strings.TrimSpace(photo.TitleID)
+	photo.Category = strings.ToLower(strings.TrimSpace(photo.Category))
+	if photo.Category == "" {
+		photo.Category = "general"
+	}
+	photo.ImagePath = strings.TrimSpace(photo.ImagePath)
+}
+
 func (h *Controller) ListHiringInquiries(c *gin.Context) {
 	listRows[models.HiringInquiry](h.db, "created_at desc", "Hiring inquiries loaded")(c)
 }

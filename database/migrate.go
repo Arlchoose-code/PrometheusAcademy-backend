@@ -55,6 +55,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.ConsultationBooking{},
 		&models.TalentJob{},
 		&models.TalentJobApplication{},
+		&models.TalentTrustPhoto{},
 		&models.HiringInquiry{},
 		&models.TalentPlusApplication{},
 		&models.TalentReviewInvitation{},
@@ -96,7 +97,17 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := cleanupRemovedCompanyAccountSchema(db); err != nil {
 		return err
 	}
+	if err := cleanupRemovedTalentSubscriptionSchema(db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func cleanupRemovedTalentSubscriptionSchema(db *gorm.DB) error {
+	if err := db.Exec("DROP TABLE IF EXISTS talent_subscriptions").Error; err != nil {
+		return fmt.Errorf("drop removed talent_subscriptions table: %w", err)
+	}
 	return nil
 }
 

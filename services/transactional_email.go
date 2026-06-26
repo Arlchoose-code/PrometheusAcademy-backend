@@ -28,6 +28,7 @@ const (
 	EmailTemplateTalentApplication    = "email_template_talent_application_received"
 	EmailTemplateTalentStatusUpdate   = "email_template_talent_status_update"
 	EmailTemplateHiringInquiry        = "email_template_hiring_inquiry_received"
+	EmailTemplateCompanyPortalInvite  = "email_template_company_portal_invite"
 	EmailTemplatePartnerApplication   = "email_template_partner_application_received"
 )
 
@@ -56,6 +57,7 @@ func TransactionalTemplateMappings() []TransactionalTemplateMapping {
 		{Key: EmailTemplateTalentApplication, Label: "Talent application received", DefaultKey: "talent_application_received", Description: "Sent after a Talent Bridge job or Talent Bridge+ application is submitted."},
 		{Key: EmailTemplateTalentStatusUpdate, Label: "Talent application status update", DefaultKey: "talent_status_update", Description: "Sent when a Talent Bridge application status changes."},
 		{Key: EmailTemplateHiringInquiry, Label: "Hiring inquiry received", DefaultKey: "hiring_inquiry_received", Description: "Sent after an employer submits an I'm Hiring inquiry."},
+		{Key: EmailTemplateCompanyPortalInvite, Label: "Company portal invite", DefaultKey: "company_portal_invite", Description: "Sent after an employer submits I'm Hiring so they can set a password and open the company dashboard."},
 		{Key: EmailTemplatePartnerApplication, Label: "Partner application received", DefaultKey: "partner_application_received", Description: "Sent after a university partner application is submitted."},
 	}
 }

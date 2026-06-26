@@ -103,6 +103,14 @@ func BuildCourseSummaries(ctx context.Context, db *gorm.DB, courses []models.Cou
 		if err != nil {
 			return nil, err
 		}
+		var joinedCount int64
+		var completedCount int64
+		if err := db.WithContext(ctx).Model(&models.CourseEnrollment{}).Where("course_id = ?", course.ID).Count(&joinedCount).Error; err != nil {
+			return nil, err
+		}
+		if err := db.WithContext(ctx).Model(&models.CourseEnrollment{}).Where("course_id = ? AND completed_at IS NOT NULL", course.ID).Count(&completedCount).Error; err != nil {
+			return nil, err
+		}
 		items = append(items, gin.H{
 			"id":                   course.ID,
 			"title_en":             course.TitleEn,
@@ -122,6 +130,8 @@ func BuildCourseSummaries(ctx context.Context, db *gorm.DB, courses []models.Cou
 			"topics_count":         topicsCount,
 			"rating":               rating,
 			"reviews_count":        reviews,
+			"joined_count":         joinedCount,
+			"completed_count":      completedCount,
 			"min_quiz_score":       course.MinQuizScore,
 			"quiz_attempt_limit":   course.QuizAttemptLimit,
 		})

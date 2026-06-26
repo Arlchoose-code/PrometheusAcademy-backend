@@ -480,6 +480,33 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req structs.Requ
 	return nil
 }
 
+func CreatePasswordResetInvitation(ctx context.Context, db *gorm.DB, cfg config.Config, user models.User, settingKey string, fallbackKey string, variables map[string]string) (string, error) {
+	if db == nil {
+		return "", errors.New("database is not configured")
+	}
+	token, err := randomResetToken()
+	if err != nil {
+		return "", err
+	}
+	item := models.PasswordResetToken{
+		UserID:    user.ID,
+		TokenHash: passwordResetTokenHash(token),
+		ExpiresAt: time.Now().Add(passwordResetTTL),
+	}
+	if err := db.WithContext(ctx).Create(&item).Error; err != nil {
+		return "", fmt.Errorf("create password reset token: %w", err)
+	}
+	resetURL := localizedFrontendURL(cfg, user.Language, "/login") + "?reset_token=" + url.QueryEscape(token)
+	values := map[string]string{"reset_url": resetURL}
+	for key, value := range variables {
+		values[key] = value
+	}
+	if err := SendTransactionalTemplateEmail(ctx, db, settingKey, fallbackKey, user, values); err != nil {
+		log.Printf("password invitation email failed: user_id=%d email=%s error=%v", user.ID, user.Email, err)
+	}
+	return resetURL, nil
+}
+
 func (s *AuthService) ConfirmPasswordReset(ctx context.Context, req structs.ConfirmPasswordResetRequest) error {
 	if s.db == nil {
 		return errors.New("database is not configured")
