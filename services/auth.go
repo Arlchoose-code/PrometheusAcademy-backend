@@ -92,6 +92,8 @@ func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest)
 		existing.Name = strings.TrimSpace(req.Name)
 		existing.Password = hash
 		existing.Language = language
+		existing.IsCompany = req.AccountType == "company"
+		existing.IsStudent = !existing.IsCompany
 		if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
 			return models.User{}, TokenPair{}, nil, fmt.Errorf("auth register update pending user: %w", err)
 		}
@@ -122,7 +124,8 @@ func (s *AuthService) Register(ctx context.Context, req structs.RegisterRequest)
 		Name:      strings.TrimSpace(req.Name),
 		Email:     email,
 		Password:  hash,
-		IsStudent: true,
+		IsStudent: req.AccountType != "company",
+		IsCompany: req.AccountType == "company",
 		IsAdmin:   false,
 		Language:  language,
 	}
@@ -547,6 +550,7 @@ func (s *AuthService) UserResponse(user models.User) structs.UserResponse {
 		IsStudent:           user.IsStudent,
 		IsAdmin:             user.IsAdmin,
 		IsInstructor:        user.IsInstructor,
+		IsCompany:           user.IsCompany,
 		InstructorGrantedAt: user.InstructorGrantedAt,
 		InstructorGrantedBy: user.InstructorGrantedBy,
 		Language:            user.Language,

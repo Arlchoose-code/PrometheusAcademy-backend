@@ -5,7 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func (h *Controller) GetTalentLanding(c *gin.Context) {
@@ -89,6 +94,9 @@ func (h *Controller) CreateHiringInquiry(c *gin.Context) {
 	req.WorkEmail = strings.ToLower(strings.TrimSpace(req.WorkEmail))
 	req.CompanyName = strings.TrimSpace(req.CompanyName)
 	req.RolesNeeded = strings.TrimSpace(req.RolesNeeded)
+	if req.Language != "id" {
+		req.Language = "en"
+	}
 	if req.Headcount <= 0 {
 		req.Headcount = 1
 	}
@@ -97,6 +105,16 @@ func (h *Controller) CreateHiringInquiry(c *gin.Context) {
 		return
 	}
 	req.Status = "new"
+	var existingUser models.User
+	if err := h.db.WithContext(c.Request.Context()).Where("LOWER(email) = ?", req.WorkEmail).First(&existingUser).Error; err == nil {
+		if !existingUser.IsAdmin && !existingUser.IsCompany {
+			c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "Use a dedicated company email or ask an admin to change this account to Company", Code: "company_account_required"})
+			return
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to validate company account"})
+		return
+	}
 	if err := h.db.WithContext(c.Request.Context()).Create(&req).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit hiring inquiry"})
 		return
@@ -120,7 +138,7 @@ func (h *Controller) ensureCompanyPortalInvite(ctx context.Context, inquiry mode
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return
 		}
-		password, err := randomCompanyPortalPassword()
+		password, err := randomPortalPassword()
 		if err != nil {
 			return
 		}
@@ -136,27 +154,45 @@ func (h *Controller) ensureCompanyPortalInvite(ctx context.Context, inquiry mode
 			Name:            name,
 			Email:           email,
 			Password:        hash,
-			IsStudent:       true,
-			Language:        "en",
+			IsStudent:       false,
+			IsCompany:       true,
+			Language:        inquiry.Language,
 			EmailVerifiedAt: &now,
 		}
 		if err := h.db.WithContext(ctx).Create(&user).Error; err != nil {
 			return
 		}
+	} else if !user.IsCompany {
+		if !user.IsAdmin {
+			return
+		}
+		updates := map[string]any{"is_company": true}
+		if err := h.db.WithContext(ctx).Model(&user).Updates(updates).Error; err != nil {
+			return
+		}
+		user.IsCompany = true
+		if !user.IsAdmin {
+			user.IsStudent = false
+		}
 	}
-	locale := user.Language
+	locale := inquiry.Language
+	if locale != "id" {
+		locale = user.Language
+	}
 	if locale != "id" {
 		locale = "en"
 	}
+	inviteUser := user
+	inviteUser.Language = locale
 	companyDashboardURL := strings.TrimRight(h.cfg.FrontendURL, "/") + "/" + locale + "/talent-bridge/company-dashboard"
-	_, _ = services.CreatePasswordResetInvitation(ctx, h.db, h.cfg, user, services.EmailTemplateCompanyPortalInvite, "company_portal_invite", map[string]string{
+	_, _ = services.CreatePasswordResetInvitation(ctx, h.db, h.cfg, inviteUser, services.EmailTemplateCompanyPortalInvite, "company_portal_invite", map[string]string{
 		"company_name":          inquiry.CompanyName,
 		"roles_needed":          inquiry.RolesNeeded,
 		"company_dashboard_url": companyDashboardURL,
 	})
 }
 
-func randomCompanyPortalPassword() (string, error) {
+func randomPortalPassword() (string, error) {
 	buffer := make([]byte, 32)
 	if _, err := rand.Read(buffer); err != nil {
 		return "", err
@@ -179,6 +215,9 @@ func (h *Controller) CreateTalentPlusApplication(c *gin.Context) {
 	req.JobField = strings.TrimSpace(req.JobField)
 	req.ProgrammeInterest = strings.TrimSpace(req.ProgrammeInterest)
 	req.TargetCountries = strings.TrimSpace(req.TargetCountries)
+	if req.Language != "id" {
+		req.Language = "en"
+	}
 	if req.FirstName == "" || req.LastName == "" || req.Email == "" || !strings.Contains(req.Email, "@") || req.Phone == "" || req.Country == "" || req.CurrentStatus == "" || req.JobField == "" || req.ProgrammeInterest == "" || req.TargetCountries == "" || !req.GDPRConsent {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Required fields and GDPR consent are needed"})
 		return
@@ -188,13 +227,72 @@ func (h *Controller) CreateTalentPlusApplication(c *gin.Context) {
 		return
 	}
 	req.Status = "new"
-	if err := h.db.WithContext(c.Request.Context()).Create(&req).Error; err != nil {
+	var authenticatedUser *models.User
+	if user, exists := c.Get("user"); exists {
+		if authUser, ok := user.(models.User); ok && strings.EqualFold(authUser.Email, req.Email) {
+			authenticatedUser = &authUser
+		}
+	}
+	var inviteUser *models.User
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var owner models.User
+		lookupErr := tx.Where("LOWER(email) = ?", req.Email).First(&owner).Error
+		if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return lookupErr
+		}
+		if lookupErr == nil {
+			if !owner.IsAdmin && !owner.IsStudent {
+				return errors.New("talent_student_account_required")
+			}
+			if authenticatedUser != nil && authenticatedUser.ID == owner.ID {
+				req.UserID = owner.ID
+			}
+		} else {
+			password, passwordErr := randomPortalPassword()
+			if passwordErr != nil {
+				return passwordErr
+			}
+			hash, hashErr := services.HashPassword(password)
+			if hashErr != nil {
+				return hashErr
+			}
+			now := time.Now()
+			owner = models.User{
+				Name:            strings.TrimSpace(req.FirstName + " " + req.LastName),
+				Email:           req.Email,
+				Password:        hash,
+				IsStudent:       true,
+				Language:        req.Language,
+				EmailVerifiedAt: &now,
+			}
+			if createErr := tx.Create(&owner).Error; createErr != nil {
+				return createErr
+			}
+			req.UserID = owner.ID
+			inviteCopy := owner
+			inviteUser = &inviteCopy
+		}
+		return tx.Create(&req).Error
+	})
+	if err != nil {
+		if err.Error() == "talent_student_account_required" {
+			c.JSON(http.StatusConflict, structs.Response{Success: false, Message: "This email belongs to a different account type. Use a student email or ask an admin to change the role", Code: "talent_student_account_required"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit Talent Bridge+ application"})
 		return
 	}
-	h.sendTalentConfirmation(c, services.EmailTemplateTalentApplication, "talent_application_received", req.FirstName+" "+req.LastName, req.Email, map[string]string{
-		"application_type": "Talent Bridge+",
-	})
+	if inviteUser != nil {
+		dashboardURL := strings.TrimRight(h.cfg.FrontendURL, "/") + "/" + req.Language + "/dashboard"
+		_, _ = services.CreatePasswordResetInvitation(c.Request.Context(), h.db, h.cfg, *inviteUser, services.EmailTemplateTalentPortalInvite, "talent_portal_invite", map[string]string{
+			"application_type": "Talent Bridge+",
+			"dashboard_url":    dashboardURL,
+		})
+	} else {
+		h.sendTalentConfirmation(c, services.EmailTemplateTalentApplication, "talent_application_received", req.FirstName+" "+req.LastName, req.Email, map[string]string{
+			"application_type": "Talent Bridge+",
+		})
+	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge+ application submitted", Data: req})
 }
 
@@ -285,7 +383,7 @@ func (h *Controller) GetTalentJob(c *gin.Context) {
 func (h *Controller) GetCompanyTalentDashboard(c *gin.Context) {
 	user := c.MustGet("user").(models.User)
 	email := strings.ToLower(strings.TrimSpace(user.Email))
-	var inquiries []models.HiringInquiry
+	inquiries := make([]models.HiringInquiry, 0)
 	if err := h.db.WithContext(c.Request.Context()).
 		Where("LOWER(work_email) = ?", email).
 		Order("created_at desc").
@@ -293,33 +391,172 @@ func (h *Controller) GetCompanyTalentDashboard(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load company dashboard"})
 		return
 	}
-	if len(inquiries) == 0 {
-		c.JSON(http.StatusForbidden, structs.Response{Success: false, Code: "company_inquiry_required", Message: "Submit an I'm Hiring inquiry with this work email before opening the company dashboard"})
-		return
-	}
-
-	var hiredCount int
+	var hiredCount int64
 	var requestedHeadcount int
 	activeRequests := 0
 	for _, inquiry := range inquiries {
 		requestedHeadcount += inquiry.Headcount
 		switch strings.ToLower(inquiry.Status) {
-		case "resolved", "won", "completed", "hired":
-			hiredCount += inquiry.Headcount
-		case "new", "contacted", "in_progress", "qualified":
+		case "new", "contacted", "approved", "posted", "in_progress", "qualified":
 			activeRequests++
 		}
 	}
+	if err := h.db.WithContext(c.Request.Context()).Table("talent_job_applications a").
+		Joins("JOIN talent_jobs j ON j.id = a.job_id").
+		Joins("JOIN hiring_inquiries h ON h.id = j.hiring_inquiry_id").
+		Where("LOWER(h.work_email) = ? AND a.status = ?", email, "hired").
+		Count(&hiredCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to count company placements"})
+		return
+	}
+	type candidateRow struct {
+		ID         uint   `json:"id"`
+		Name       string `json:"name"`
+		Email      string `json:"email"`
+		Status     string `json:"status"`
+		JobTitleEn string `json:"job_title_en"`
+		JobTitleID string `json:"job_title_id"`
+		AppliedAt  string `json:"applied_at"`
+	}
+	candidates := make([]candidateRow, 0)
+	if err := h.db.WithContext(c.Request.Context()).Table("talent_job_applications a").
+		Select("a.id, a.name, a.email, a.status, j.title_en AS job_title_en, j.title_id AS job_title_id, a.applied_at").
+		Joins("JOIN talent_jobs j ON j.id = a.job_id").
+		Joins("JOIN hiring_inquiries h ON h.id = j.hiring_inquiry_id").
+		Where("LOWER(h.work_email) = ? AND a.status IN ?", email, []string{"proposed", "interview", "hired", "declined"}).
+		Order("a.applied_at DESC").Scan(&candidates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load proposed candidates"})
+		return
+	}
+	placements := make([]candidateRow, 0)
+	for _, candidate := range candidates {
+		if candidate.Status == "hired" {
+			placements = append(placements, candidate)
+		}
+	}
+	companyName := companyDashboardName(inquiries)
+	if companyName == "" {
+		companyName = user.Name
+	}
 
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Company dashboard loaded", Data: gin.H{
-		"company_name":        companyDashboardName(inquiries),
+		"company_name":        companyName,
 		"hired_count":         hiredCount,
 		"requested_headcount": requestedHeadcount,
 		"active_requests":     activeRequests,
 		"inquiries":           inquiries,
-		"employee_profiles":   []gin.H{},
-		"timesheet_approvals": []gin.H{},
+		"candidates":          candidates,
+		"placements":          placements,
 	}})
+}
+
+func (h *Controller) UpdateCompanyCandidateDecision(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	applicationID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || applicationID == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid candidate id"})
+		return
+	}
+	var req struct {
+		Decision string `json:"decision"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid decision"})
+		return
+	}
+	decision := strings.ToLower(strings.TrimSpace(req.Decision))
+	allowed := map[string]bool{"interview": true, "hired": true, "declined": true}
+	if !allowed[decision] {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Decision must be interview, hired, or declined"})
+		return
+	}
+	err = h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var application models.TalentJobApplication
+		if err := tx.Raw(`
+			SELECT a.* FROM talent_job_applications a
+			JOIN talent_jobs j ON j.id = a.job_id
+			JOIN hiring_inquiries h ON h.id = j.hiring_inquiry_id
+			WHERE a.id = ? AND LOWER(h.work_email) = ? FOR UPDATE
+		`, uint(applicationID), strings.ToLower(strings.TrimSpace(user.Email))).Scan(&application).Error; err != nil {
+			return err
+		}
+		if application.ID == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if application.Status != "proposed" && application.Status != "interview" && application.Status != "hired" && application.Status != "declined" {
+			return fmt.Errorf("candidate has not been proposed to your company")
+		}
+		var job models.TalentJob
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&job, application.JobID).Error; err != nil {
+			return err
+		}
+		if decision == "hired" && application.Status != "hired" {
+			var hired int64
+			if err := tx.Model(&models.TalentJobApplication{}).Where("job_id = ? AND status = ?", job.ID, "hired").Count(&hired).Error; err != nil {
+				return err
+			}
+			if hired >= int64(job.OpenPositions) {
+				return fmt.Errorf("all requested positions are already filled")
+			}
+		}
+		if err := tx.Model(&application).Update("status", decision).Error; err != nil {
+			return err
+		}
+		var hired int64
+		if err := tx.Model(&models.TalentJobApplication{}).Where("job_id = ? AND status = ?", job.ID, "hired").Count(&hired).Error; err != nil {
+			return err
+		}
+		jobStatus, inquiryStatus := "open", "in_progress"
+		if hired >= int64(job.OpenPositions) {
+			jobStatus, inquiryStatus = "closed", "resolved"
+		}
+		if err := tx.Model(&job).Update("status", jobStatus).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.HiringInquiry{}).Where("id = ?", job.HiringInquiryID).Update("status", inquiryStatus).Error
+	})
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		message := "Failed to save candidate decision"
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			statusCode = http.StatusNotFound
+			message = "Candidate not found"
+		} else if err.Error() == "candidate has not been proposed to your company" || err.Error() == "all requested positions are already filled" {
+			statusCode = http.StatusBadRequest
+			message = err.Error()
+		}
+		c.JSON(statusCode, structs.Response{Success: false, Message: message})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Candidate decision saved"})
+}
+
+func (h *Controller) DownloadCompanyCandidateCV(c *gin.Context) {
+	user := c.MustGet("user").(models.User)
+	applicationID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || applicationID == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid candidate id"})
+		return
+	}
+	var application models.TalentJobApplication
+	if err := h.db.WithContext(c.Request.Context()).Raw(`
+		SELECT a.* FROM talent_job_applications a
+		JOIN talent_jobs j ON j.id = a.job_id
+		JOIN hiring_inquiries h ON h.id = j.hiring_inquiry_id
+		WHERE a.id = ? AND LOWER(h.work_email) = ? AND a.status IN ('proposed','interview','hired','declined')
+	`, uint(applicationID), strings.ToLower(strings.TrimSpace(user.Email))).Scan(&application).Error; err != nil || application.ID == 0 {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Candidate not found"})
+		return
+	}
+	reader, info, err := services.OpenStoredUploadPath(c.Request.Context(), h.db, h.cfg, application.CVPath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "CV file not found"})
+		return
+	}
+	defer reader.Close()
+	c.Header("Content-Type", info.ContentType)
+	c.Header("Content-Disposition", `attachment; filename="candidate-cv`+filepath.Ext(application.CVPath)+`"`)
+	_, _ = io.Copy(c.Writer, reader)
 }
 
 func (h *Controller) GetTalentApplyEligibility(c *gin.Context) {
@@ -329,10 +566,23 @@ func (h *Controller) GetTalentApplyEligibility(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load Talent Bridge eligibility"})
 		return
 	}
+	alreadyApplied := false
+	if slug := strings.TrimSpace(c.Query("job_slug")); slug != "" {
+		var count int64
+		if err := h.db.WithContext(c.Request.Context()).Table("talent_job_applications a").
+			Joins("JOIN talent_jobs j ON j.id = a.job_id").
+			Where("j.slug = ? AND a.user_id = ?", slug, user.ID).
+			Count(&count).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check existing application"})
+			return
+		}
+		alreadyApplied = count > 0
+	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent Bridge eligibility loaded", Data: gin.H{
 		"eligible":        eligible || user.IsAdmin,
 		"enrolled_count":  enrolledCount,
 		"completed_count": completedCount,
+		"already_applied": alreadyApplied,
 	}})
 }
 
@@ -354,8 +604,19 @@ func (h *Controller) CreateTalentJobApplication(c *gin.Context) {
 		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "Job not found"})
 		return
 	}
-	name := strings.TrimSpace(c.PostForm("name"))
-	email := strings.ToLower(strings.TrimSpace(c.PostForm("email")))
+	var duplicateCount int64
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.TalentJobApplication{}).
+		Where("job_id = ? AND (user_id = ? OR LOWER(email) = ?)", job.ID, user.ID, strings.ToLower(strings.TrimSpace(user.Email))).
+		Count(&duplicateCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check existing application"})
+		return
+	}
+	if duplicateCount > 0 {
+		c.JSON(http.StatusConflict, structs.Response{Success: false, Code: "talent_already_applied", Message: "You have already applied for this position"})
+		return
+	}
+	name := strings.TrimSpace(user.Name)
+	email := strings.ToLower(strings.TrimSpace(user.Email))
 	file, err := c.FormFile("cv")
 	if name == "" || email == "" || !strings.Contains(email, "@") || err != nil {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Name, email, and CV are required"})
@@ -366,7 +627,7 @@ func (h *Controller) CreateTalentJobApplication(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
 		return
 	}
-	application := models.TalentJobApplication{JobID: job.ID, Name: name, Email: email, CVPath: path, Status: "new", AppliedAt: time.Now()}
+	application := models.TalentJobApplication{UserID: user.ID, JobID: job.ID, Name: name, Email: email, CVPath: path, Status: "new", AppliedAt: time.Now()}
 	if err := h.db.WithContext(c.Request.Context()).Create(&application).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to submit application"})
 		return

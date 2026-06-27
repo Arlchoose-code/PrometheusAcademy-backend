@@ -244,6 +244,7 @@ func (h *Controller) ListUsers(c *gin.Context) {
 		IsStudent           bool       `json:"is_student"`
 		IsAdmin             bool       `json:"is_admin"`
 		IsInstructor        bool       `json:"is_instructor"`
+		IsCompany           bool       `json:"is_company"`
 		InstructorGrantedAt *time.Time `json:"instructor_granted_at"`
 		InstructorGrantedBy *uint      `json:"instructor_granted_by"`
 		Language            string     `json:"language"`
@@ -255,7 +256,7 @@ func (h *Controller) ListUsers(c *gin.Context) {
 	}
 	var rows []row
 	if err := h.db.WithContext(c.Request.Context()).Raw(`
-		SELECT u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.is_instructor,
+		SELECT u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.is_instructor, u.is_company,
 			u.instructor_granted_at, u.instructor_granted_by, u.language, u.created_at,
 			MAX(COALESCE(o.created_at, e.created_at, u.updated_at)) AS last_active_at,
 			COUNT(DISTINCT e.id) AS enrolled_courses,
@@ -264,7 +265,7 @@ func (h *Controller) ListUsers(c *gin.Context) {
 		FROM users u
 		LEFT JOIN course_enrollments e ON e.user_id = u.id
 		LEFT JOIN orders o ON o.user_id = u.id
-		GROUP BY u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.is_instructor,
+		GROUP BY u.id, u.name, u.email, u.avatar, u.phone, u.is_student, u.is_admin, u.is_instructor, u.is_company,
 			u.instructor_granted_at, u.instructor_granted_by, u.language, u.created_at
 		ORDER BY u.created_at DESC
 	`).Scan(&rows).Error; err != nil {
@@ -338,8 +339,8 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 	}
 
 	role := strings.ToLower(strings.TrimSpace(req.Role))
-	if role != "admin" && role != "student" && role != "instructor" {
-		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Role must be admin, instructor, or student"})
+	if role != "admin" && role != "student" && role != "instructor" && role != "company" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Role must be admin, instructor, company, or student"})
 		return
 	}
 
@@ -352,12 +353,16 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 		return
 	}
 
-	if role == "student" && currentUser.ID == user.ID {
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if role == "admin" && !enabled && currentUser.ID == user.ID {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "You cannot remove your own admin role"})
 		return
 	}
 
-	if role == "student" && user.IsAdmin {
+	if role == "admin" && !enabled && user.IsAdmin {
 		var adminCount int64
 		if err := h.db.WithContext(c.Request.Context()).Model(&models.User{}).Where("is_admin = ?", true).Count(&adminCount).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check admins"})
@@ -371,10 +376,6 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 
 	updates := map[string]any{}
 	if role == "instructor" {
-		enabled := true
-		if req.Enabled != nil {
-			enabled = *req.Enabled
-		}
 		if !enabled {
 			var assignedCourses int64
 			if err := h.db.WithContext(c.Request.Context()).Model(&models.Course{}).Where("instructor_id = ?", uint(userID)).Count(&assignedCourses).Error; err != nil {
@@ -398,14 +399,53 @@ func (h *Controller) UpdateUserRole(c *gin.Context) {
 			updates["instructor_granted_by"] = currentUser.ID
 			if !user.IsAdmin {
 				updates["is_student"] = false
+				updates["is_company"] = false
 			}
 		}
+	} else if role == "company" {
+		updates["is_company"] = enabled
+		if !user.IsAdmin {
+			if enabled && user.IsInstructor {
+				var assignedCourses int64
+				if err := h.db.WithContext(c.Request.Context()).Model(&models.Course{}).Where("instructor_id = ?", uint(userID)).Count(&assignedCourses).Error; err != nil {
+					c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check assigned courses"})
+					return
+				}
+				if assignedCourses > 0 {
+					c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Reassign this instructor's courses before changing the primary role"})
+					return
+				}
+				updates["is_instructor"] = false
+				updates["instructor_granted_at"] = nil
+				updates["instructor_granted_by"] = nil
+			}
+			updates["is_student"] = !enabled
+		}
 	} else if role == "admin" {
-		updates["is_admin"] = true
-		updates["is_student"] = true
+		updates["is_admin"] = enabled
 	} else {
-		updates["is_admin"] = false
-		updates["is_student"] = !user.IsInstructor
+		if !enabled {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Choose another primary role instead of disabling Student"})
+			return
+		}
+		updates["is_student"] = true
+		if !user.IsAdmin {
+			if user.IsInstructor {
+				var assignedCourses int64
+				if err := h.db.WithContext(c.Request.Context()).Model(&models.Course{}).Where("instructor_id = ?", uint(userID)).Count(&assignedCourses).Error; err != nil {
+					c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to check assigned courses"})
+					return
+				}
+				if assignedCourses > 0 {
+					c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Reassign this instructor's courses before changing the primary role"})
+					return
+				}
+				updates["is_instructor"] = false
+				updates["instructor_granted_at"] = nil
+				updates["instructor_granted_by"] = nil
+			}
+			updates["is_company"] = false
+		}
 	}
 	if err := h.db.WithContext(c.Request.Context()).Model(&models.User{}).Where("id = ?", uint(userID)).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update role"})

@@ -3,6 +3,7 @@ package routes
 import (
 	"academyprometheus/backend/config"
 	publiccontroller "academyprometheus/backend/controllers/public"
+	"academyprometheus/backend/middlewares"
 	"academyprometheus/backend/services"
 
 	"github.com/gin-gonic/gin"
@@ -43,7 +44,7 @@ func registerTalentPublicRoutes(router *gin.RouterGroup, db *gorm.DB, cfg config
 	router.GET("/talent/jobs", publicController.ListTalentJobs)
 	router.GET("/talent/jobs/:slug", publicController.GetTalentJob)
 	router.POST("/talent/hiring", publicController.CreateHiringInquiry)
-	router.POST("/talent/plus", publicController.CreateTalentPlusApplication)
+	router.POST("/talent/plus", middlewares.OptionalAuth(db, cfg), publicController.CreateTalentPlusApplication)
 	router.GET("/talent/review-invitations/:token", publicController.GetTalentReviewInvitation)
 	router.POST("/talent/review-invitations/:token", publicController.SubmitTalentReviewInvitation)
 	router.GET("/partners", publicController.ListPartners)

@@ -27,6 +27,7 @@ const (
 	EmailTemplateCampaignDefault      = "email_template_campaign_default_wrapper"
 	EmailTemplateTalentReviewInvite   = "email_template_talent_review_invitation"
 	EmailTemplateTalentApplication    = "email_template_talent_application_received"
+	EmailTemplateTalentPortalInvite   = "email_template_talent_portal_invite"
 	EmailTemplateTalentStatusUpdate   = "email_template_talent_status_update"
 	EmailTemplateHiringInquiry        = "email_template_hiring_inquiry_received"
 	EmailTemplateCompanyPortalInvite  = "email_template_company_portal_invite"
@@ -56,6 +57,7 @@ func TransactionalTemplateMappings() []TransactionalTemplateMapping {
 		{Key: EmailTemplateCampaignDefault, Label: "Default simple campaign wrapper", DefaultKey: "campaign_simple", Description: "Editable wrapper used when Campaign Composer uses Default simple email."},
 		{Key: EmailTemplateTalentReviewInvite, Label: "Talent review invitation", DefaultKey: "talent_review_invitation", Description: "Sent when an eligible Talent Bridge applicant is invited to leave a review."},
 		{Key: EmailTemplateTalentApplication, Label: "Talent application received", DefaultKey: "talent_application_received", Description: "Sent after a Talent Bridge job or Talent Bridge+ application is submitted."},
+		{Key: EmailTemplateTalentPortalInvite, Label: "Talent portal invite", DefaultKey: "talent_portal_invite", Description: "Sent after a new Talent Bridge+ applicant needs to set a password and open the Student Dashboard."},
 		{Key: EmailTemplateTalentStatusUpdate, Label: "Talent application status update", DefaultKey: "talent_status_update", Description: "Sent when a Talent Bridge application status changes."},
 		{Key: EmailTemplateHiringInquiry, Label: "Hiring inquiry received", DefaultKey: "hiring_inquiry_received", Description: "Sent after an employer submits an I'm Hiring inquiry."},
 		{Key: EmailTemplateCompanyPortalInvite, Label: "Company portal invite", DefaultKey: "company_portal_invite", Description: "Sent after an employer submits I'm Hiring so they can set a password and open the company dashboard."},

@@ -94,13 +94,26 @@ func AutoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
 
-	if err := cleanupRemovedCompanyAccountSchema(db); err != nil {
-		return err
-	}
 	if err := cleanupRemovedTalentSubscriptionSchema(db); err != nil {
 		return err
 	}
+	if err := backfillTalentAccountLinks(db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func backfillTalentAccountLinks(db *gorm.DB) error {
+	queries := []string{
+		`UPDATE users SET is_student = FALSE, is_company = FALSE WHERE is_admin = FALSE AND is_instructor = TRUE`,
+		`UPDATE users SET is_student = FALSE WHERE is_admin = FALSE AND is_company = TRUE`,
+	}
+	for _, query := range queries {
+		if err := db.Exec(query).Error; err != nil {
+			return fmt.Errorf("backfill talent account links: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -108,30 +121,5 @@ func cleanupRemovedTalentSubscriptionSchema(db *gorm.DB) error {
 	if err := db.Exec("DROP TABLE IF EXISTS talent_subscriptions").Error; err != nil {
 		return fmt.Errorf("drop removed talent_subscriptions table: %w", err)
 	}
-	return nil
-}
-
-func cleanupRemovedCompanyAccountSchema(db *gorm.DB) error {
-	var isCompanyColumnCount int64
-	if err := db.Raw(`
-		SELECT COUNT(*)
-		FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_SCHEMA = DATABASE()
-			AND TABLE_NAME = 'users'
-			AND COLUMN_NAME = 'is_company'
-	`).Scan(&isCompanyColumnCount).Error; err != nil {
-		return fmt.Errorf("check removed users.is_company column: %w", err)
-	}
-
-	if isCompanyColumnCount > 0 {
-		if err := db.Exec("ALTER TABLE users DROP COLUMN is_company").Error; err != nil {
-			return fmt.Errorf("drop removed users.is_company column: %w", err)
-		}
-	}
-
-	if err := db.Exec("DROP TABLE IF EXISTS company_profiles").Error; err != nil {
-		return fmt.Errorf("drop removed company_profiles table: %w", err)
-	}
-
 	return nil
 }

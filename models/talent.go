@@ -4,17 +4,19 @@ import "time"
 
 type TalentJob struct {
 	BaseModel
-	TitleEn       string `gorm:"size:191;not null" json:"title_en"`
-	TitleID       string `gorm:"size:191;not null" json:"title_id"`
-	Slug          string `gorm:"size:191;not null;uniqueIndex" json:"slug"`
-	DescriptionEn string `gorm:"type:longtext" json:"description_en"`
-	DescriptionID string `gorm:"type:longtext" json:"description_id"`
-	OpenPositions int    `gorm:"not null;default:1" json:"open_positions"`
-	Status        string `gorm:"size:20;not null;default:'open';index" json:"status"`
+	HiringInquiryID uint   `gorm:"index" json:"hiring_inquiry_id"`
+	TitleEn         string `gorm:"size:191;not null" json:"title_en"`
+	TitleID         string `gorm:"size:191;not null" json:"title_id"`
+	Slug            string `gorm:"size:191;not null;uniqueIndex" json:"slug"`
+	DescriptionEn   string `gorm:"type:longtext" json:"description_en"`
+	DescriptionID   string `gorm:"type:longtext" json:"description_id"`
+	OpenPositions   int    `gorm:"not null;default:1" json:"open_positions"`
+	Status          string `gorm:"size:20;not null;default:'open';index" json:"status"`
 }
 
 type TalentJobApplication struct {
 	BaseModel
+	UserID    uint      `gorm:"index" json:"user_id"`
 	JobID     uint      `gorm:"not null;index" json:"job_id"`
 	Name      string    `gorm:"size:191;not null" json:"name"`
 	Email     string    `gorm:"size:191;not null;index" json:"email"`
@@ -45,10 +47,12 @@ type HiringInquiry struct {
 	Challenge   string `gorm:"type:text" json:"challenge"`
 	GDPRConsent bool   `gorm:"not null;default:false" json:"gdpr_consent"`
 	Status      string `gorm:"size:30;not null;default:'new';index" json:"status"`
+	Language    string `gorm:"-" json:"language,omitempty"`
 }
 
 type TalentPlusApplication struct {
 	BaseModel
+	UserID            uint   `gorm:"index" json:"user_id"`
 	FirstName         string `gorm:"size:100;not null" json:"first_name"`
 	LastName          string `gorm:"size:100;not null" json:"last_name"`
 	Email             string `gorm:"size:191;not null;index" json:"email"`
@@ -61,6 +65,7 @@ type TalentPlusApplication struct {
 	CareerGoals       string `gorm:"type:text" json:"career_goals"`
 	GDPRConsent       bool   `gorm:"not null;default:false" json:"gdpr_consent"`
 	Status            string `gorm:"size:30;not null;default:'new';index" json:"status"`
+	Language          string `gorm:"-" json:"language,omitempty"`
 }
 
 type TalentReviewInvitation struct {

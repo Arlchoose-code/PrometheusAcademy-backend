@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"academyprometheus/backend/models"
@@ -20,6 +21,7 @@ type DashboardData struct {
 	Certificates []DashboardCertificate `json:"certificates"`
 	Transactions []DashboardTransaction `json:"transactions"`
 	Gamification GamificationSummary    `json:"gamification"`
+	TalentBridge []DashboardTalentItem  `json:"talent_bridge"`
 }
 
 type DashboardStats struct {
@@ -56,6 +58,14 @@ type DashboardTransaction struct {
 	Date                string `json:"date"`
 	InvoiceURL          string `json:"invoice_url"`
 	DownloadURL         string `json:"download_url"`
+}
+
+type DashboardTalentItem struct {
+	ID        uint   `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Submitted string `json:"submitted"`
 }
 
 func NewDashboardService(db *gorm.DB) *DashboardService {
@@ -104,8 +114,82 @@ func (s *DashboardService) GetStudentDashboard(ctx context.Context, userID uint)
 	if err != nil {
 		return DashboardData{}, err
 	}
+	talentBridge, err := s.dashboardTalentBridge(ctx, userID)
+	if err != nil {
+		return DashboardData{}, err
+	}
 
-	return DashboardData{Stats: stats, Courses: courses, Certificates: certificates, Transactions: transactions, Gamification: gamification}, nil
+	return DashboardData{Stats: stats, Courses: courses, Certificates: certificates, Transactions: transactions, Gamification: gamification, TalentBridge: talentBridge}, nil
+}
+
+func (s *DashboardService) dashboardTalentBridge(ctx context.Context, userID uint) ([]DashboardTalentItem, error) {
+	items := []DashboardTalentItem{}
+	var user models.User
+	if err := s.db.WithContext(ctx).Select("id", "email").First(&user, userID).Error; err != nil {
+		return nil, fmt.Errorf("dashboard talent owner: %w", err)
+	}
+	email := strings.ToLower(strings.TrimSpace(user.Email))
+	if email != "" {
+		if err := s.db.WithContext(ctx).Model(&models.TalentPlusApplication{}).
+			Where("user_id = 0 AND LOWER(email) = ?", email).
+			Update("user_id", userID).Error; err != nil {
+			return nil, fmt.Errorf("claim dashboard talent plus: %w", err)
+		}
+		if err := s.db.WithContext(ctx).Model(&models.TalentJobApplication{}).
+			Where("user_id = 0 AND LOWER(email) = ?", email).
+			Update("user_id", userID).Error; err != nil {
+			return nil, fmt.Errorf("claim dashboard talent jobs: %w", err)
+		}
+	}
+	var plusApplications []models.TalentPlusApplication
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("created_at desc").
+		Limit(6).
+		Find(&plusApplications).Error; err != nil {
+		return nil, fmt.Errorf("dashboard talent plus: %w", err)
+	}
+	for _, item := range plusApplications {
+		title := strings.TrimSpace(item.JobField)
+		if title == "" {
+			title = "Talent Bridge+"
+		}
+		items = append(items, DashboardTalentItem{
+			ID:        item.ID,
+			Type:      "talent_plus",
+			Title:     title,
+			Status:    item.Status,
+			Submitted: item.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	type jobRow struct {
+		ID        uint
+		Title     string
+		Status    string
+		CreatedAt time.Time
+	}
+	var jobApplications []jobRow
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT a.id, COALESCE(j.title_en, 'Talent Bridge Job') AS title, a.status, a.created_at
+		FROM talent_job_applications a
+		LEFT JOIN talent_jobs j ON j.id = a.job_id
+		WHERE a.user_id = ?
+		ORDER BY a.created_at DESC
+		LIMIT 6
+	`, userID).Scan(&jobApplications).Error; err != nil {
+		return nil, fmt.Errorf("dashboard talent jobs: %w", err)
+	}
+	for _, item := range jobApplications {
+		items = append(items, DashboardTalentItem{
+			ID:        item.ID,
+			Type:      "job_application",
+			Title:     item.Title,
+			Status:    item.Status,
+			Submitted: item.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return items, nil
 }
 
 func (s *DashboardService) dashboardCourses(ctx context.Context, userID uint) ([]DashboardCourse, error) {

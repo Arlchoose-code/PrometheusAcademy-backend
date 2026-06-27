@@ -56,7 +56,7 @@ func TalentReviewStatusEligible(applicationType string, status string) bool {
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch strings.TrimSpace(applicationType) {
 	case "job":
-		return status == "accepted" || status == "completed"
+		return status == "hired" || status == "accepted" || status == "completed"
 	case "plus":
 		return status == "placed" || status == "completed"
 	default:

@@ -53,6 +53,33 @@ func AuthGuard(db *gorm.DB, cfg config.Config) gin.HandlerFunc {
 	}
 }
 
+// OptionalAuth attaches a valid current user while keeping public forms usable by guests.
+func OptionalAuth(db *gorm.DB, cfg config.Config) gin.HandlerFunc {
+	authService := services.NewAuthService(db, cfg)
+	return func(c *gin.Context) {
+		if db == nil {
+			c.Next()
+			return
+		}
+		token, err := c.Cookie("access_token")
+		if err != nil || token == "" {
+			c.Next()
+			return
+		}
+		claims, err := authService.ParseAccessToken(token)
+		if err != nil || authService.EnsureTokenAllowed(c.Request.Context(), claims.ID) != nil {
+			c.Next()
+			return
+		}
+		var user models.User
+		if err := db.WithContext(c.Request.Context()).First(&user, claims.UserID).Error; err == nil && authService.EnsureTokenVersion(user, claims) == nil {
+			c.Set("user", user)
+			c.Set("user_id", user.ID)
+		}
+		c.Next()
+	}
+}
+
 func RoleGuard(roles ...string) gin.HandlerFunc {
 	allowed := map[string]bool{}
 	for _, role := range roles {
@@ -81,6 +108,10 @@ func RoleGuard(roles ...string) gin.HandlerFunc {
 			return
 		}
 		if allowed["instructor"] && user.IsInstructor {
+			c.Next()
+			return
+		}
+		if allowed["company"] && user.IsCompany {
 			c.Next()
 			return
 		}

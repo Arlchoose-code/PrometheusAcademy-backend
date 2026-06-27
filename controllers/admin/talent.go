@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func (h *Controller) ListTalentJobs(c *gin.Context) {
@@ -32,13 +35,49 @@ func (h *Controller) CreateTalentJob(c *gin.Context) {
 		job.Slug = services.GenerateSlug(job.TitleEn)
 	}
 	if strings.TrimSpace(job.Status) == "" {
-		job.Status = "open"
+		job.Status = "draft"
+	}
+	if job.Status != "draft" && job.Status != "open" && job.Status != "closed" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Job status must be draft, open, or closed"})
+		return
 	}
 	if job.OpenPositions <= 0 {
 		job.OpenPositions = 1
 	}
-	if err := h.db.WithContext(c.Request.Context()).Create(&job).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to create job"})
+	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if job.HiringInquiryID != 0 {
+			var inquiry models.HiringInquiry
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&inquiry, job.HiringInquiryID).Error; err != nil {
+				return err
+			}
+			if inquiry.Status != "approved" {
+				return fmt.Errorf("hiring inquiry must be approved before creating a job")
+			}
+			var existing int64
+			if err := tx.Model(&models.TalentJob{}).Where("hiring_inquiry_id = ?", inquiry.ID).Count(&existing).Error; err != nil {
+				return err
+			}
+			if existing > 0 {
+				return fmt.Errorf("this hiring inquiry already has a job listing")
+			}
+			job.OpenPositions = inquiry.Headcount
+			job.Status = "draft"
+		}
+		if err := tx.Create(&job).Error; err != nil {
+			return err
+		}
+		if job.HiringInquiryID != 0 {
+			return tx.Model(&models.HiringInquiry{}).Where("id = ?", job.HiringInquiryID).Update("status", "drafted").Error
+		}
+		return nil
+	}); err != nil {
+		message := "Failed to create job"
+		statusCode := http.StatusInternalServerError
+		if err.Error() == "hiring inquiry must be approved before creating a job" || err.Error() == "this hiring inquiry already has a job listing" {
+			message = err.Error()
+			statusCode = http.StatusBadRequest
+		}
+		c.JSON(statusCode, structs.Response{Success: false, Message: message})
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent job created", Data: job})
@@ -61,11 +100,32 @@ func (h *Controller) UpdateTalentJob(c *gin.Context) {
 	if job.OpenPositions <= 0 {
 		job.OpenPositions = 1
 	}
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.TalentJob{}).Where("id = ?", uint(id)).Select("title_en", "title_id", "slug", "description_en", "description_id", "open_positions", "status").Updates(job).Error; err != nil {
+	if job.Status != "draft" && job.Status != "open" && job.Status != "closed" {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Job status must be draft, open, or closed"})
+		return
+	}
+	var existing models.TalentJob
+	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&existing, uint(id)).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&existing).Select("title_en", "title_id", "slug", "description_en", "description_id", "open_positions", "status").Updates(job).Error; err != nil {
+			return err
+		}
+		if existing.HiringInquiryID != 0 && job.Status != "closed" {
+			inquiryStatus := "drafted"
+			if job.Status == "open" {
+				inquiryStatus = "posted"
+			}
+			return tx.Model(&models.HiringInquiry{}).Where("id = ? AND status <> ?", existing.HiringInquiryID, "resolved").Update("status", inquiryStatus).Error
+		}
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to save job"})
 		return
 	}
 	job.ID = uint(id)
+	job.HiringInquiryID = existing.HiringInquiryID
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Talent job saved", Data: job})
 }
 
@@ -138,11 +198,93 @@ func normalizeTalentTrustPhoto(photo *models.TalentTrustPhoto) {
 }
 
 func (h *Controller) ListHiringInquiries(c *gin.Context) {
-	listRows[models.HiringInquiry](h.db, "created_at desc", "Hiring inquiries loaded")(c)
+	type row struct {
+		models.HiringInquiry
+		JobID              uint  `json:"job_id"`
+		HiredCount         int64 `json:"hired_count"`
+		RemainingPositions int   `json:"remaining_positions"`
+	}
+	var rows []row
+	if err := h.db.WithContext(c.Request.Context()).Raw(`
+		SELECT h.*, COALESCE(MAX(j.id), 0) AS job_id,
+			COUNT(DISTINCT CASE WHEN a.status = 'hired' THEN a.id END) AS hired_count
+		FROM hiring_inquiries h
+		LEFT JOIN talent_jobs j ON j.hiring_inquiry_id = h.id
+		LEFT JOIN talent_job_applications a ON a.job_id = j.id
+		GROUP BY h.id
+		ORDER BY h.created_at DESC
+	`).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to load hiring inquiries"})
+		return
+	}
+	for index := range rows {
+		remaining := rows[index].Headcount - int(rows[index].HiredCount)
+		if remaining < 0 {
+			remaining = 0
+		}
+		rows[index].RemainingPositions = remaining
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Hiring inquiries loaded", Data: rows})
 }
 
 func (h *Controller) UpdateHiringInquiry(c *gin.Context) {
-	updateLeadStatus[models.HiringInquiry](h.db, "Hiring inquiry saved")(c)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid hiring inquiry id"})
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid status"})
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(req.Status))
+	allowed := map[string]bool{"new": true, "contacted": true, "approved": true, "drafted": true, "rejected": true}
+	if !allowed[status] {
+		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Unsupported hiring status"})
+		return
+	}
+	var createdJob *models.TalentJob
+	if err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var inquiry models.HiringInquiry
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&inquiry, uint(id)).Error; err != nil {
+			return err
+		}
+		if status == "drafted" {
+			var job models.TalentJob
+			err := tx.Where("hiring_inquiry_id = ?", inquiry.ID).First(&job).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				job = models.TalentJob{
+					HiringInquiryID: inquiry.ID,
+					TitleEn:         inquiry.RolesNeeded,
+					TitleID:         inquiry.RolesNeeded,
+					Slug:            fmt.Sprintf("%s-%d", services.GenerateSlug(inquiry.RolesNeeded), inquiry.ID),
+					DescriptionEn:   inquiry.Challenge,
+					DescriptionID:   inquiry.Challenge,
+					OpenPositions:   inquiry.Headcount,
+					Status:          "draft",
+				}
+				if err := tx.Create(&job).Error; err != nil {
+					return err
+				}
+				createdJob = &job
+			} else if err != nil {
+				return err
+			} else {
+				if err := tx.Model(&job).Updates(map[string]any{"open_positions": inquiry.Headcount, "status": "draft"}).Error; err != nil {
+					return err
+				}
+				createdJob = &job
+			}
+		}
+		return tx.Model(&inquiry).Update("status", status).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update hiring inquiry"})
+		return
+	}
+	c.JSON(http.StatusOK, structs.Response{Success: true, Message: "Hiring inquiry saved", Data: gin.H{"job": createdJob}})
 }
 
 func (h *Controller) ListTalentPlusApplications(c *gin.Context) {
@@ -200,8 +342,8 @@ func (h *Controller) updateTalentApplicationStatus(c *gin.Context, applicationTy
 			return
 		}
 	} else {
-		if err := h.db.WithContext(c.Request.Context()).Model(&models.TalentJobApplication{}).Where("id = ?", uint(id)).Update("status", status).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to update status"})
+		if err := h.updateJobApplicationStatus(c.Request.Context(), uint(id), status); err != nil {
+			c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: err.Error()})
 			return
 		}
 	}
@@ -214,6 +356,30 @@ func (h *Controller) updateTalentApplicationStatus(c *gin.Context, applicationTy
 		return
 	}
 	c.JSON(http.StatusOK, structs.Response{Success: true, Message: message})
+}
+
+func (h *Controller) updateJobApplicationStatus(ctx context.Context, applicationID uint, status string) error {
+	allowed := map[string]bool{"new": true, "screening": true, "proposed": true, "rejected": true}
+	if !allowed[status] {
+		return fmt.Errorf("unsupported application status")
+	}
+	return h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var application models.TalentJobApplication
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&application, applicationID).Error; err != nil {
+			return fmt.Errorf("application not found")
+		}
+		var job models.TalentJob
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&job, application.JobID).Error; err != nil {
+			return fmt.Errorf("job not found")
+		}
+		if err := tx.Model(&application).Update("status", status).Error; err != nil {
+			return err
+		}
+		if status == "proposed" && job.HiringInquiryID != 0 {
+			return tx.Model(&models.HiringInquiry{}).Where("id = ? AND status <> ?", job.HiringInquiryID, "resolved").Update("status", "in_progress").Error
+		}
+		return nil
+	})
 }
 
 func (h *Controller) DownloadTalentApplicationCV(c *gin.Context) {
@@ -414,22 +580,25 @@ func updateLeadStatus[T any](db *gorm.DB, message string) gin.HandlerFunc {
 }
 
 type talentApplicationRow struct {
-	ID            uint      `json:"id"`
-	JobID         uint      `json:"job_id"`
-	JobTitleEn    string    `json:"job_title_en"`
-	JobTitleID    string    `json:"job_title_id"`
-	Name          string    `json:"name"`
-	Email         string    `json:"email"`
-	CVPath        string    `json:"cv_path"`
-	Status        string    `json:"status"`
-	AppliedAt     time.Time `json:"applied_at"`
-	CreatedAt     time.Time `json:"created_at"`
-	OpenPositions int       `json:"open_positions"`
+	ID              uint      `json:"id"`
+	JobID           uint      `json:"job_id"`
+	JobTitleEn      string    `json:"job_title_en"`
+	JobTitleID      string    `json:"job_title_id"`
+	Name            string    `json:"name"`
+	Email           string    `json:"email"`
+	CVPath          string    `json:"cv_path"`
+	Status          string    `json:"status"`
+	AppliedAt       time.Time `json:"applied_at"`
+	CreatedAt       time.Time `json:"created_at"`
+	OpenPositions   int       `json:"open_positions"`
+	HiringInquiryID uint      `json:"hiring_inquiry_id"`
+	HiredCount      int64     `json:"hired_count"`
 }
 
 func talentApplicationRows(ctx context.Context, db *gorm.DB, jobID uint) ([]talentApplicationRow, error) {
 	query := db.WithContext(ctx).Table("talent_job_applications a").
-		Select(`a.id, a.job_id, j.title_en AS job_title_en, j.title_id AS job_title_id, a.name, a.email, a.cv_path, a.status, a.applied_at, a.created_at, j.open_positions`).
+		Select(`a.id, a.job_id, j.title_en AS job_title_en, j.title_id AS job_title_id, a.name, a.email, a.cv_path, a.status, a.applied_at, a.created_at, j.open_positions, j.hiring_inquiry_id,
+			(SELECT COUNT(*) FROM talent_job_applications hired WHERE hired.job_id = j.id AND hired.status = 'hired') AS hired_count`).
 		Joins("JOIN talent_jobs j ON j.id = a.job_id").
 		Order("a.applied_at desc, a.id desc")
 	if jobID != 0 {

@@ -12,6 +12,7 @@ type User struct {
 	IsStudent           bool       `gorm:"not null;default:true" json:"is_student"`
 	IsAdmin             bool       `gorm:"not null;default:false;index" json:"is_admin"`
 	IsInstructor        bool       `gorm:"not null;default:false;index" json:"is_instructor"`
+	IsCompany           bool       `gorm:"not null;default:false;index" json:"is_company"`
 	InstructorGrantedAt *time.Time `json:"instructor_granted_at"`
 	InstructorGrantedBy *uint      `gorm:"index" json:"instructor_granted_by"`
 	Language            string     `gorm:"size:5;not null;default:'en'" json:"language"`

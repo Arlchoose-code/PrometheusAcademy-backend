@@ -3,10 +3,11 @@ package structs
 import "time"
 
 type RegisterRequest struct {
-	Name     string `json:"name" binding:"required,min=2,max=191"`
-	Email    string `json:"email" binding:"required,email,max=191"`
-	Password string `json:"password" binding:"required,min=8,max=72"`
-	Language string `json:"language" binding:"omitempty,oneof=en id"`
+	Name        string `json:"name" binding:"required,min=2,max=191"`
+	Email       string `json:"email" binding:"required,email,max=191"`
+	Password    string `json:"password" binding:"required,min=8,max=72"`
+	Language    string `json:"language" binding:"omitempty,oneof=en id"`
+	AccountType string `json:"account_type" binding:"omitempty,oneof=student company"`
 }
 
 type LoginRequest struct {
@@ -70,6 +71,7 @@ type UserRequest struct {
 	IsStudent    bool   `json:"is_student"`
 	IsAdmin      bool   `json:"is_admin"`
 	IsInstructor bool   `json:"is_instructor"`
+	IsCompany    bool   `json:"is_company"`
 	Language     string `json:"language"`
 }
 
@@ -82,6 +84,7 @@ type UserResponse struct {
 	IsStudent           bool                `json:"is_student"`
 	IsAdmin             bool                `json:"is_admin"`
 	IsInstructor        bool                `json:"is_instructor"`
+	IsCompany           bool                `json:"is_company"`
 	InstructorGrantedAt *time.Time          `json:"instructor_granted_at,omitempty"`
 	InstructorGrantedBy *uint               `json:"instructor_granted_by,omitempty"`
 	Language            string              `json:"language"`
