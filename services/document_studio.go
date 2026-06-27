@@ -477,7 +477,7 @@ func renderHTMLPDFWithChromium(ctx context.Context, cfg config.Config, html stri
 	htmlPath := htmlFile.Name()
 	defer os.Remove(htmlPath)
 	if _, err := htmlFile.WriteString(html); err != nil {
-		htmlFile.Close()
+		_ = htmlFile.Close()
 		return nil, err
 	}
 	if err := htmlFile.Close(); err != nil {
@@ -488,7 +488,9 @@ func renderHTMLPDFWithChromium(ctx context.Context, cfg config.Config, html stri
 		return nil, err
 	}
 	pdfPath := pdfFile.Name()
-	pdfFile.Close()
+	if err := pdfFile.Close(); err != nil {
+		return nil, err
+	}
 	defer os.Remove(pdfPath)
 	absHTML, _ := filepath.Abs(htmlPath)
 	fileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absHTML)}).String()
@@ -507,10 +509,12 @@ func renderHTMLPDFWithChromium(ctx context.Context, cfg config.Config, html stri
 	if orientation == "landscape" {
 		args = append([]string{"--landscape"}, args...)
 	}
+	// #nosec G204 - binary comes from findChromiumBinary candidates/stat/LookPath and args use server-created temp files.
 	output, err := exec.CommandContext(renderCtx, binary, args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("chromium pdf render failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	// #nosec G304 - pdfPath is created by os.CreateTemp in this function.
 	pdf, err := os.ReadFile(pdfPath)
 	if err != nil {
 		return nil, err

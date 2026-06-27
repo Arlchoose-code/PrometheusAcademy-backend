@@ -18,6 +18,7 @@ func ExpiredJWTCookie(name string, secure bool) *http.Cookie {
 }
 
 func jwtCookie(name, value string, expiresAt time.Time, secure bool) *http.Cookie {
+	// #nosec G124 - Secure is true in production; local HTTP development keeps it false so auth can be tested.
 	return &http.Cookie{
 		Name:     name,
 		Value:    value,

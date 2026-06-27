@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	EmailTemplateRegister             = "email_template_register"
-	EmailTemplateEmailVerification    = "email_template_email_verification"
-	EmailTemplateLogin                = "email_template_login"
+	EmailTemplateRegister          = "email_template_register"
+	EmailTemplateEmailVerification = "email_template_email_verification"
+	EmailTemplateLogin             = "email_template_login"
+	// #nosec G101 - this is an email template key, not a credential.
 	EmailTemplatePasswordReset        = "email_template_password_reset"
 	EmailTemplateInvoice              = "email_template_invoice"
 	EmailTemplatePaymentSuccess       = "email_template_payment_success"

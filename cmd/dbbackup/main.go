@@ -41,6 +41,7 @@ func main() {
 
 	gz := gzip.NewWriter(tmp)
 	var stderr bytes.Buffer
+	// #nosec G204 - mysqldump is a fixed executable and arguments are passed without a shell.
 	command := exec.CommandContext(ctx, "mysqldump",
 		"--host="+cfg.DBHost,
 		"--port="+cfg.DBPort,
@@ -70,11 +71,12 @@ func main() {
 		fatal("close database backup", err)
 	}
 
+	// #nosec G304 - tmpName is created by os.CreateTemp in this function.
 	file, err := os.Open(tmpName)
 	if err != nil {
 		fatal("open database backup", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	storage, err := services.NewR2Storage(ctx, cfg, bucket, accessKey, secretKey)
 	if err != nil {

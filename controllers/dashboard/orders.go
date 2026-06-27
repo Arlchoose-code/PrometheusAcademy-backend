@@ -157,9 +157,9 @@ func (h *Controller) DownloadProductFile(c *gin.Context) {
 	_ = services.AwardXP(c.Request.Context(), h.db, user.ID, services.XPEventMaterialDownloaded, "product_file", file.ID, services.XPMaterialDownloaded, "Downloaded a learning material", "Download materi belajar")
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.FileName))
-	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, file.FilePath)
+	reader, info, err := services.OpenStoredUploadPath(c.Request.Context(), h.db, h.cfg, file.FilePath)
 	if err != nil {
-		c.File(services.StorageFilePath(h.cfg, file.FilePath))
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "File not found"})
 		return
 	}
 	defer reader.Close()

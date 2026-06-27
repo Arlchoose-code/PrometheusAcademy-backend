@@ -16,13 +16,17 @@ import (
 )
 
 func (h *Controller) HandleMidtransWebhook(c *gin.Context) {
+	if strings.TrimSpace(h.cfg.MidtransServerKey) == "" {
+		c.JSON(http.StatusServiceUnavailable, structs.Response{Success: false, Message: "Payment webhook is not configured"})
+		return
+	}
 	var req structs.MidtransWebhookRequest
 	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.OrderID) == "" {
 		c.JSON(http.StatusBadRequest, structs.Response{Success: false, Message: "Invalid webhook payload"})
 		return
 	}
 	expected := services.MidtransSignature(req.OrderID, req.StatusCode, req.GrossAmount, h.cfg.MidtransServerKey)
-	if h.cfg.MidtransServerKey != "" && subtle.ConstantTimeCompare([]byte(expected), []byte(req.SignatureKey)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(req.SignatureKey)) != 1 {
 		c.JSON(http.StatusForbidden, structs.Response{Success: false, Message: "Invalid signature"})
 		return
 	}

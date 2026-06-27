@@ -119,6 +119,7 @@ func ConnectDatabase(cfg Config) (*gorm.DB, error) {
 }
 
 func loadEnvFile(path string) {
+	// #nosec G304 - called with the literal ".env" path during config bootstrap.
 	file, err := os.Open(path)
 	if err != nil {
 		return

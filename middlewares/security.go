@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +37,49 @@ func StrictCORS(cfg config.Config) gin.HandlerFunc {
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	})
+}
+
+func UnsafeOriginGuard(cfg config.Config) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(cfg.CORSOrigins))
+	for _, origin := range cfg.CORSOrigins {
+		origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+		if origin != "" {
+			allowed[origin] = struct{}{}
+		}
+	}
+
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+		origin := strings.TrimRight(strings.TrimSpace(c.GetHeader("Origin")), "/")
+		if origin == "" {
+			c.Next()
+			return
+		}
+		if _, ok := allowed[origin]; ok {
+			c.Next()
+			return
+		}
+		if sameOriginHost(origin, c.Request.Host) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"code":    "invalid_origin",
+			"message": "Invalid request origin",
+		})
+	}
+}
+
+func sameOriginHost(origin string, requestHost string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return parsed.Host != "" && strings.EqualFold(parsed.Host, requestHost)
 }
 
 func RequestID() gin.HandlerFunc {

@@ -57,11 +57,11 @@ func (h *Controller) GetHealth(c *gin.Context) {
 
 func (h *Controller) ServeUpload(c *gin.Context) {
 	cleanPath := path.Clean("/" + c.Param("filepath"))
-	if strings.HasPrefix(cleanPath, "/certificates/") || strings.HasPrefix(cleanPath, "/product-files/") || strings.HasPrefix(cleanPath, "/invoices/") {
+	publicPath := "/uploads/" + strings.TrimPrefix(cleanPath, "/")
+	if !services.IsPublicUploadObjectKey(services.ObjectKeyFromPublicPath(publicPath)) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	publicPath := "/uploads/" + strings.TrimPrefix(cleanPath, "/")
 	reader, info, err := services.OpenStoredPublicPath(c.Request.Context(), h.db, h.cfg, publicPath)
 	if err != nil {
 		log.Warn().Str("public_path", publicPath).Err(err).Msg("upload serve failed")

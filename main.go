@@ -67,6 +67,7 @@ func main() {
 	router.Use(middlewares.RequestID())
 	router.Use(middlewares.SecurityHeaders())
 	router.Use(middlewares.StrictCORS(cfg))
+	router.Use(middlewares.UnsafeOriginGuard(cfg))
 	router.Use(middlewares.RateLimit(cfg.RateLimitPerMinute))
 
 	api := router.Group("/api/v1")

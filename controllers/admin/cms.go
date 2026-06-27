@@ -2,7 +2,7 @@ package admin
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -320,7 +320,7 @@ func (h *Controller) googleReviewSettings(ctx context.Context) (string, string) 
 }
 
 func googleReviewExternalID(placeID string, review googlePlaceReview) string {
-	hash := sha1.Sum([]byte(fmt.Sprintf("%s|%s|%d|%s", placeID, review.AuthorName, review.Time, review.Text)))
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%s", placeID, review.AuthorName, review.Time, review.Text)))
 	return hex.EncodeToString(hash[:])
 }
 

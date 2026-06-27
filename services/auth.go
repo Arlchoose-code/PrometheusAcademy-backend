@@ -465,7 +465,7 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req structs.Requ
 	}
 	item := models.PasswordResetToken{
 		UserID:    user.ID,
-		TokenHash: passwordResetTokenHash(token),
+		TokenHash: passwordResetTokenHash(s.passwordResetHashSecret(), token),
 		ExpiresAt: time.Now().Add(passwordResetTTL),
 	}
 	if err := s.db.WithContext(ctx).Create(&item).Error; err != nil {
@@ -490,7 +490,7 @@ func CreatePasswordResetInvitation(ctx context.Context, db *gorm.DB, cfg config.
 	}
 	item := models.PasswordResetToken{
 		UserID:    user.ID,
-		TokenHash: passwordResetTokenHash(token),
+		TokenHash: passwordResetTokenHash(passwordResetHashSecret(cfg), token),
 		ExpiresAt: time.Now().Add(passwordResetTTL),
 	}
 	if err := db.WithContext(ctx).Create(&item).Error; err != nil {
@@ -512,7 +512,7 @@ func (s *AuthService) ConfirmPasswordReset(ctx context.Context, req structs.Conf
 		return errors.New("database is not configured")
 	}
 	var token models.PasswordResetToken
-	if err := s.db.WithContext(ctx).Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", passwordResetTokenHash(req.Token), time.Now()).First(&token).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", passwordResetTokenHash(s.passwordResetHashSecret(), req.Token), time.Now()).First(&token).Error; err != nil {
 		return errors.New("invalid or expired reset token")
 	}
 	hash, err := HashPassword(req.Password)
@@ -631,9 +631,23 @@ func randomResetToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func passwordResetTokenHash(token string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	return hex.EncodeToString(sum[:])
+func (s *AuthService) passwordResetHashSecret() string {
+	return passwordResetHashSecret(s.cfg)
+}
+
+func passwordResetHashSecret(cfg config.Config) string {
+	secret := strings.TrimSpace(cfg.AuthOTPSecret)
+	if secret != "" {
+		return secret
+	}
+	return strings.TrimSpace(cfg.JWTSecret)
+}
+
+func passwordResetTokenHash(secret string, token string) string {
+	normalized := strings.TrimSpace(token)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(normalized))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func randomOTPCode() (string, error) {

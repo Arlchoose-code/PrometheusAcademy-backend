@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"io"
 	"mime"
 	"net/http"
 	"path/filepath"
@@ -233,7 +234,17 @@ func (h *Controller) DownloadTalentApplicationCV(c *gin.Context) {
 	if contentType := mime.TypeByExtension(extension); contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
-	c.FileAttachment(services.StorageFilePath(h.cfg, application.CVPath), "candidate-cv"+extension)
+	reader, info, err := services.OpenStoredUploadPath(c.Request.Context(), h.db, h.cfg, application.CVPath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, structs.Response{Success: false, Message: "CV file not found"})
+		return
+	}
+	defer reader.Close()
+	if info.ContentType != "" {
+		c.Header("Content-Type", info.ContentType)
+	}
+	c.Header("Content-Disposition", `attachment; filename="candidate-cv`+extension+`"`)
+	_, _ = io.Copy(c.Writer, reader)
 }
 
 func (h *Controller) ListPartnerApplications(c *gin.Context) {

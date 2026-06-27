@@ -574,7 +574,7 @@ func mapStringAny(input map[string]any) map[string]string {
 }
 
 func writeSimpleInvoicePDF(path string, invoice models.Invoice, order models.Order) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	body := fmt.Sprintf("Prometheus Academy Invoice\n\nInvoice: %s\nOrder: %s\nAmount: Rp %d\nStatus: %s\nIssued: %s\n",
@@ -587,7 +587,7 @@ func writeSimpleInvoicePDF(path string, invoice models.Invoice, order models.Ord
 	pdf := "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
 	stream := "BT /F1 12 Tf 72 720 Td " + pdfEscape(body) + " Tj ET"
 	pdf += fmt.Sprintf("4 0 obj<</Length %d>>stream\n%s\nendstream endobj\nxref\n0 6\n0000000000 65535 f \ntrailer<</Root 1 0 R/Size 6>>\nstartxref\n0\n%%%%EOF", len(stream), stream)
-	return os.WriteFile(path, []byte(pdf), 0644)
+	return os.WriteFile(path, []byte(pdf), 0o600)
 }
 
 func pdfEscape(text string) string {

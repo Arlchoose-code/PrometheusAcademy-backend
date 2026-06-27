@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ func (s *LocalStorage) Put(ctx context.Context, in PutObjectInput) (StoredObject
 	if err != nil {
 		return StoredObject{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return StoredObject{}, err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(p), ".object-*")
@@ -96,6 +97,7 @@ func (s *LocalStorage) Open(_ context.Context, key string) (io.ReadCloser, Objec
 	if e != nil {
 		return nil, ObjectInfo{}, e
 	}
+	// #nosec G304 - p is resolved by LocalStorage.path and checked to stay inside the storage root.
 	f, e := os.Open(p)
 	if os.IsNotExist(e) {
 		return nil, ObjectInfo{}, ErrObjectNotFound
@@ -105,7 +107,7 @@ func (s *LocalStorage) Open(_ context.Context, key string) (io.ReadCloser, Objec
 	}
 	st, e := f.Stat()
 	if e != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, ObjectInfo{}, e
 	}
 	return f, ObjectInfo{Key: key, Size: st.Size(), ModifiedAt: st.ModTime()}, nil
@@ -118,7 +120,7 @@ func (s *LocalStorage) Exists(ctx context.Context, key string) (bool, error) {
 	if e != nil {
 		return false, e
 	}
-	r.Close()
+	_ = r.Close()
 	return true, nil
 }
 func (s *LocalStorage) Delete(_ context.Context, key string) error {
@@ -325,8 +327,62 @@ func ObjectKeyFromPublicPath(publicPath string) string {
 	return strings.TrimLeft(filepath.ToSlash(strings.TrimSpace(publicPath)), "/")
 }
 
+func isUploadObjectKey(key string) bool {
+	if hasUnsafeObjectPathSegment(key) {
+		return false
+	}
+	clean := path.Clean("/" + filepath.ToSlash(strings.TrimSpace(key)))
+	clean = strings.TrimPrefix(clean, "/")
+	return clean != "." && clean != "" && strings.HasPrefix(clean, "uploads/")
+}
+
+func IsPublicUploadObjectKey(key string) bool {
+	if hasUnsafeObjectPathSegment(key) {
+		return false
+	}
+	clean := path.Clean("/" + filepath.ToSlash(strings.TrimSpace(key)))
+	clean = strings.TrimPrefix(clean, "/")
+	if !isUploadObjectKey(clean) {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(clean)) {
+	case ".svg", ".html", ".htm", ".js", ".mjs":
+		return false
+	}
+	protectedPrefixes := []string{
+		"uploads/certificates/",
+		"uploads/course-addons/",
+		"uploads/course-files/",
+		"uploads/courses/files/",
+		"uploads/invoices/",
+		"uploads/product-files/",
+		"uploads/products/files/",
+		"uploads/submissions/",
+		"uploads/talent-cv/",
+	}
+	for _, prefix := range protectedPrefixes {
+		if strings.HasPrefix(clean, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasUnsafeObjectPathSegment(key string) bool {
+	normalized := filepath.ToSlash(strings.TrimSpace(key))
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == "." || segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 func ContentTypeForObject(key, configured string) string {
 	configured = strings.TrimSpace(strings.ToLower(strings.Split(configured, ";")[0]))
+	if isScriptableContentType(configured) {
+		return "application/octet-stream"
+	}
 	if configured != "" && configured != "application/octet-stream" {
 		return configured
 	}
@@ -352,12 +408,38 @@ func ContentTypeForObject(key, configured string) string {
 	return "application/octet-stream"
 }
 
+func isScriptableContentType(contentType string) bool {
+	switch contentType {
+	case "text/html", "application/xhtml+xml", "image/svg+xml", "application/javascript", "text/javascript", "application/ecmascript", "text/ecmascript":
+		return true
+	default:
+		return false
+	}
+}
+
 func OpenStoredPublicPath(ctx context.Context, db *gorm.DB, cfg config.Config, publicPath string) (io.ReadCloser, ObjectInfo, error) {
+	return openStoredUploadPath(ctx, db, cfg, publicPath, true)
+}
+
+func OpenStoredUploadPath(ctx context.Context, db *gorm.DB, cfg config.Config, publicPath string) (io.ReadCloser, ObjectInfo, error) {
+	return openStoredUploadPath(ctx, db, cfg, publicPath, false)
+}
+
+func openStoredUploadPath(ctx context.Context, db *gorm.DB, cfg config.Config, publicPath string, publicOnly bool) (io.ReadCloser, ObjectInfo, error) {
 	effective := EffectiveStorageConfig(ctx, db, cfg)
 	key := ObjectKeyFromPublicPath(publicPath)
+	if !isUploadObjectKey(key) {
+		return nil, ObjectInfo{}, fmt.Errorf("invalid upload object")
+	}
+	if publicOnly && !IsPublicUploadObjectKey(key) {
+		return nil, ObjectInfo{}, fmt.Errorf("object is not public")
+	}
 	if db != nil {
 		var obj models.StoredObject
 		if err := db.WithContext(ctx).Where("legacy_path = ? OR object_key = ?", publicPath, key).Order("updated_at desc").First(&obj).Error; err == nil {
+			if publicOnly && obj.Visibility != "public" {
+				return nil, ObjectInfo{}, fmt.Errorf("stored object is not public")
+			}
 			var lastErr error
 			storage, storageErr := newObjectStorageForStoredObject(ctx, effective, obj)
 			if storageErr == nil {

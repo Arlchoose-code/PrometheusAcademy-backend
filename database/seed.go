@@ -861,12 +861,25 @@ func ensureSeedCertificatePDF(publicPath string) error {
 		storageRoot = "storage"
 	}
 	relativePath := strings.TrimPrefix(publicPath, "/")
-	fullPath := filepath.Join(storageRoot, relativePath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+	if strings.Contains(filepath.ToSlash(relativePath), "../") || filepath.IsAbs(relativePath) {
+		return fmt.Errorf("invalid seed certificate path")
+	}
+	rootAbs, err := filepath.Abs(storageRoot)
+	if err != nil {
+		return fmt.Errorf("resolve seed storage root: %w", err)
+	}
+	fullPath, err := filepath.Abs(filepath.Join(rootAbs, relativePath))
+	if err != nil {
+		return fmt.Errorf("resolve seed certificate path: %w", err)
+	}
+	if fullPath != rootAbs && !strings.HasPrefix(fullPath, rootAbs+string(filepath.Separator)) {
+		return fmt.Errorf("seed certificate path escapes storage root")
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 		return fmt.Errorf("seed certificate directory: %w", err)
 	}
 	body := seedCertificatePDFBody()
-	if err := os.WriteFile(fullPath, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(fullPath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("seed certificate file: %w", err)
 	}
 	return nil

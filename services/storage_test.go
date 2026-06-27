@@ -111,4 +111,33 @@ func TestContentTypeForLegacyWebPObject(t *testing.T) {
 	if got := ContentTypeForObject("uploads/courses/course.webp", "image/custom"); got != "image/custom" {
 		t.Fatalf("valid configured MIME was replaced: %q", got)
 	}
+	if got := ContentTypeForObject("uploads/media/legacy.webp", "image/svg+xml"); got != "application/octet-stream" {
+		t.Fatalf("scriptable MIME should be downgraded, got %q", got)
+	}
+}
+
+func TestIsPublicUploadObjectKeyBlocksProtectedAndScriptableFiles(t *testing.T) {
+	allowed := []string{
+		"uploads/media/photo.webp",
+		"/uploads/pages/banner.jpg",
+	}
+	for _, key := range allowed {
+		if !IsPublicUploadObjectKey(key) {
+			t.Fatalf("%q should be public", key)
+		}
+	}
+
+	blocked := []string{
+		"uploads/talent-cv/cv.pdf",
+		"uploads/product-files/file.pdf",
+		"uploads/media/vector.svg",
+		"uploads/media/page.html",
+		"uploads/media/script.js",
+		"../uploads/media/photo.webp",
+	}
+	for _, key := range blocked {
+		if IsPublicUploadObjectKey(key) {
+			t.Fatalf("%q should not be public", key)
+		}
+	}
 }

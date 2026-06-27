@@ -312,7 +312,11 @@ func (h *Controller) ResetUserPassword(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.WithContext(c.Request.Context()).Model(&models.User{}).Where("id = ?", uint(userID)).Update("password", hash).Error; err != nil {
+	if err := h.db.WithContext(c.Request.Context()).Model(&models.User{}).Where("id = ?", uint(userID)).Updates(map[string]any{
+		"password":          hash,
+		"token_version":     gorm.Expr("token_version + 1"),
+		"last_login_otp_at": nil,
+	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, structs.Response{Success: false, Message: "Failed to reset password"})
 		return
 	}

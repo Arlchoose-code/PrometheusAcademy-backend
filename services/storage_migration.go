@@ -389,7 +389,9 @@ func RepairBrokenPaths(ctx context.Context, db *gorm.DB, cfg config.Config) ([]R
 			res.Fixed++
 			log.Info().Str("table", t.table).Uint("id", id).Str("old", p).Str("new", newPath).Msg("repair: fixed")
 		}
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			log.Warn().Str("table", t.table).Err(err).Msg("repair: close rows failed")
+		}
 		results = append(results, res)
 		log.Info().Str("table", t.table).Int("total", res.Total).Int("broken", res.Broken).Int("fixed", res.Fixed).Int("skipped", res.Skipped).Msg("repair: done")
 	}
@@ -583,7 +585,9 @@ func ProcessStorageMigrationBatch(ctx context.Context, db *gorm.DB, cfg config.C
 		}
 		contentType := ContentTypeForObject(obj.ObjectKey, obj.MimeType)
 		stored, err := target.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: r, ContentType: contentType})
-		r.Close()
+		if closeErr := r.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
 		if err != nil {
 			_ = db.WithContext(ctx).Model(&item).Updates(map[string]any{"status": "failed", "error_message": err.Error()}).Error
 			continue
@@ -744,7 +748,9 @@ func CreateObjectBackupManifest(ctx context.Context, db *gorm.DB, cfg config.Con
 		}
 		contentType := ContentTypeForObject(obj.ObjectKey, obj.MimeType)
 		storedObject, putErr := storage.Put(ctx, PutObjectInput{Key: obj.ObjectKey, Body: reader, ContentType: contentType})
-		reader.Close()
+		if closeErr := reader.Close(); putErr == nil && closeErr != nil {
+			putErr = closeErr
+		}
 		if putErr != nil {
 			return models.StorageBackup{}, fmt.Errorf("copy backup object %s: %w", obj.ObjectKey, putErr)
 		}

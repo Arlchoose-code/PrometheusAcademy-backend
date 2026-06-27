@@ -200,7 +200,7 @@ func WriteCertificatePDF(ctx context.Context, db *gorm.DB, cfg config.Config, co
 	if _, err := os.Stat(targetPath); err == nil {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return fmt.Errorf("create certificate directory: %w", err)
 	}
 	var user models.User
@@ -213,7 +213,7 @@ func WriteCertificatePDF(ctx context.Context, db *gorm.DB, cfg config.Config, co
 		courseTitle = course.TitleID
 	}
 	body := certificatePDFBody(name, courseTitle, time.Now())
-	if err := os.WriteFile(targetPath, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(targetPath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write certificate pdf: %w", err)
 	}
 	return nil
